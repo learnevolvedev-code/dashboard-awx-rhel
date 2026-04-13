@@ -1,0 +1,18 @@
+[Unit]
+Description=AWX Analytics Portal – Data Collector (oneshot)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=oneshot
+User=awxportal
+Group=awxportal
+WorkingDirectory=/opt/awx-portal
+Environment="AWX_PORTAL_CONFIG=/opt/awx-portal/config/config.yaml"
+
+ExecStart=/opt/awx-portal/venv-collector/bin/python \
+    /opt/awx-portal/collector/collector.py
+
+StandardOutput=append:/var/log/awx-portal/collector.log
+StandardError=append:/var/log/awx-portal/collector.log
+PrivateTmp=true

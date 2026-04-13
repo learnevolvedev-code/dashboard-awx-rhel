@@ -1,0 +1,4 @@
+requests>=2.31.0
+psycopg2-binary>=2.9.9
+PyYAML>=6.0.1
+python-dateutil>=2.8.2

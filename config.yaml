@@ -1,0 +1,51 @@
+# ============================================================
+# AWX Analytics Portal – Central Configuration
+# File mode: 640  Owner: root:awxportal
+# ============================================================
+
+awx:
+  base_url: "https://awx.example.com"        # AWX/Tower FQDN (no trailing slash)
+  token: "REPLACE_ME_AWX_BEARER_TOKEN"        # Read-only AWX API token
+  verify_ssl: true                             # Set false only for self-signed certs in dev
+  page_size: 200                               # Items per paginated request (max 200)
+  request_timeout: 30                          # HTTP timeout in seconds
+  max_retries: 3                               # Retry count on transient errors
+  retry_backoff: 2                             # Exponential backoff base (seconds)
+
+database:
+  host: "127.0.0.1"
+  port: 5432
+  name: "awxportal"
+  user: "awxportal"
+  password: "REPLACE_ME_DB_PASSWORD"
+  pool_min: 2
+  pool_max: 10
+  connect_timeout: 10
+
+collector:
+  # How far back to look on incremental syncs (minutes); protects against clock skew
+  overlap_minutes: 5
+  # Full-sync backfill window in days (used with --full-sync flag)
+  full_sync_days: 90
+  # Log level: DEBUG | INFO | WARNING | ERROR
+  log_level: "INFO"
+  log_file: "/var/log/awx-portal/collector.log"
+
+api:
+  host: "127.0.0.1"
+  port: 8000
+  workers: 4
+  log_level: "info"
+  log_file: "/var/log/awx-portal/api.log"
+  # CORS allowed origins (set to your portal FQDN in production)
+  cors_origins:
+    - "http://localhost"
+    - "http://localhost:8080"
+    - "https://awx-portal.example.com"
+
+portal:
+  # Set true to serve placeholder charts (no DB required for UI development)
+  demo_mode: false
+  org_name: "My Enterprise"
+  # Max rows for paginated job list API
+  jobs_page_size_max: 500

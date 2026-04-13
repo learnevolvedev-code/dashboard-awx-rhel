@@ -1,0 +1,12 @@
+[Unit]
+Description=AWX Analytics Portal – Collector Timer (every 5 minutes)
+Requires=awx-collector.service
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=awx-collector.service
+
+[Install]
+WantedBy=timers.target

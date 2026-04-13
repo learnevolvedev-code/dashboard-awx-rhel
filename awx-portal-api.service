@@ -1,0 +1,34 @@
+[Unit]
+Description=AWX Analytics Portal API (Gunicorn + UvicornWorker)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=notify
+User=awxportal
+Group=awxportal
+WorkingDirectory=/opt/awx-portal
+Environment="AWX_PORTAL_CONFIG=/opt/awx-portal/config/config.yaml"
+Environment="PYTHONPATH=/opt/awx-portal"
+
+ExecStart=/opt/awx-portal/venv-api/bin/gunicorn \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --workers 4 \
+    --bind 127.0.0.1:8000 \
+    --timeout 60 \
+    --graceful-timeout 30 \
+    --keep-alive 5 \
+    --log-level info \
+    --access-logfile /var/log/awx-portal/api-access.log \
+    --error-logfile  /var/log/awx-portal/api-error.log \
+    api.main:app
+
+ExecReload=/bin/kill -s HUP $MAINPID
+KillMode=mixed
+TimeoutStopSec=5
+PrivateTmp=true
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>AWX Analytics Portal</title>
+<!-- React 18 + Recharts via CDN (no build step) -->
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+:root{
+  --bg:#0f1117;--surface:#1a1d27;--surface2:#232638;--border:#2e3248;
+  --accent:#5b8dee;--accent2:#7c3aed;--success:#22c55e;--danger:#ef4444;
+  --warning:#f59e0b;--text:#e2e8f0;--muted:#94a3b8;--radius:10px;
+  --font:'Inter',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;min-height:100vh}
+a{color:var(--accent);text-decoration:none}
+/* scrollbar */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+/* layout */
+#root{display:flex;flex-direction:column;min-height:100vh}
+.topbar{background:var(--surface);border-bottom:1px solid var(--border);
+  padding:0 24px;height:56px;display:flex;align-items:center;gap:16px;
+  position:sticky;top:0;z-index:100}
+.topbar-logo{font-size:18px;font-weight:700;color:var(--accent);letter-spacing:-.5px}
+.topbar-logo span{color:var(--text);font-weight:400}
+.topbar-spacer{flex:1}
+.topbar-sync{font-size:12px;color:var(--muted)}
+.topbar-demo{background:var(--warning);color:#000;padding:2px 8px;border-radius:4px;
+  font-size:11px;font-weight:600}
+.layout{display:flex;flex:1}
+.sidebar{width:220px;background:var(--surface);border-right:1px solid var(--border);
+  padding:16px 12px;display:flex;flex-direction:column;gap:4px;flex-shrink:0;min-height:calc(100vh - 56px)}
+.nav-item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;
+  cursor:pointer;color:var(--muted);transition:all .15s;font-size:13px;user-select:none}
+.nav-item:hover{background:var(--surface2);color:var(--text)}
+.nav-item.active{background:rgba(91,141,238,.15);color:var(--accent);font-weight:600}
+.nav-section{font-size:11px;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.08em;padding:12px 12px 4px}
+.main{flex:1;padding:24px;overflow-y:auto;min-width:0}
+/* cards */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px}
+.card-title{font-size:13px;color:var(--muted);font-weight:500;margin-bottom:4px}
+.card-value{font-size:28px;font-weight:700}
+.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+.grid-2{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+@media(max-width:1200px){.grid-4{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:900px){.grid-4{grid-template-columns:1fr 1fr}.grid-3{grid-template-columns:1fr 1fr}}
+/* section header */
+.section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.section-title{font-size:16px;font-weight:600}
+/* period selector */
+.period-bar{display:flex;gap:4px;background:var(--surface2);border-radius:8px;padding:3px}
+.period-btn{padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px;
+  border:none;background:transparent;color:var(--muted);transition:all .15s}
+.period-btn.active{background:var(--accent);color:#fff;font-weight:600}
+/* table */
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:10px 12px;border-bottom:1px solid var(--border);
+  color:var(--muted);font-weight:500;white-space:nowrap}
+td{padding:10px 12px;border-bottom:1px solid var(--border)}
+tr:hover td{background:var(--surface2)}
+/* badges */
+.badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;
+  border-radius:999px;font-size:11px;font-weight:600}
+.badge-success{background:rgba(34,197,94,.15);color:var(--success)}
+.badge-danger{background:rgba(239,68,68,.15);color:var(--danger)}
+.badge-warning{background:rgba(245,158,11,.15);color:var(--warning)}
+.badge-info{background:rgba(91,141,238,.15);color:var(--accent)}
+.badge-muted{background:var(--surface2);color:var(--muted)}
+/* progress bar */
+.prog-bar{width:100%;height:6px;background:var(--surface2);border-radius:3px;overflow:hidden}
+.prog-fill{height:100%;border-radius:3px;transition:width .4s}
+/* spinner */
+.spinner{width:32px;height:32px;border:3px solid var(--border);
+  border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;margin:auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+.center{display:flex;align-items:center;justify-content:center;min-height:200px}
+/* error */
+.error-box{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);
+  border-radius:var(--radius);padding:16px;color:var(--danger);font-size:13px}
+/* org list */
+.org-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:16px;cursor:pointer;transition:all .15s}
+.org-card:hover{border-color:var(--accent);transform:translateY(-1px)}
+.org-card-name{font-weight:600;font-size:15px;margin-bottom:8px}
+/* search */
+.search-input{background:var(--surface2);border:1px solid var(--border);border-radius:8px;
+  padding:7px 12px;color:var(--text);font-size:13px;width:220px;outline:none;transition:border .15s}
+.search-input:focus{border-color:var(--accent)}
+.select-input{background:var(--surface2);border:1px solid var(--border);border-radius:8px;
+  padding:7px 12px;color:var(--text);font-size:13px;outline:none;cursor:pointer}
+/* back btn */
+.back-btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;
+  background:var(--surface2);border:1px solid var(--border);border-radius:8px;
+  cursor:pointer;font-size:13px;color:var(--text);transition:all .15s;margin-bottom:16px}
+.back-btn:hover{border-color:var(--accent);color:var(--accent)}
+/* tooltip custom */
+.recharts-tooltip-wrapper{outline:none}
+.custom-tooltip{background:var(--surface2);border:1px solid var(--border);
+  border-radius:8px;padding:10px 14px;font-size:12px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+// ── Portal config (overridden by deployment) ───────────────
+window.AWX_PORTAL_CONFIG = {
+  useMockData: true,   // Set false in production
+  apiBase: '/api',
+  orgName: 'My Enterprise',
+};
+</script>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useMemo } = React;
+const {
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, Area, AreaChart
+} = Recharts;
+
+const API = window.AWX_PORTAL_CONFIG.apiBase;
+const MOCK = window.AWX_PORTAL_CONFIG.useMockData;
+
+// ─────────────────────────────────────────────────────────
+// Mock data
+// ─────────────────────────────────────────────────────────
+function genTrend(days, baseJobs=120, successRate=0.92){
+  return Array.from({length:days},(_,i)=>{
+    const d=new Date(); d.setDate(d.getDate()-days+i+1);
+    const t=Math.round(baseJobs*(0.7+Math.random()*0.6));
+    const s=Math.round(t*successRate*(0.9+Math.random()*.2));
+    const f=Math.round((t-s)*0.7);
+    const c=t-s-f;
+    return {
+      metric_date: d.toISOString().slice(0,10),
+      total_jobs:t, successful_jobs:s, failed_jobs:Math.max(0,f),
+      canceled_jobs:Math.max(0,c),
+      success_rate_pct: Math.round(s/t*1000)/10,
+      avg_duration_s: Math.round(80+Math.random()*120),
+    };
+  });
+}
+
+const MOCK_ORGS=[
+  {org_id:1,org_name:'Platform Engineering',total_jobs_30d:3210,success_jobs_30d:3020,
+   failed_jobs_30d:140,canceled_jobs_30d:50,success_rate_pct:94.1,avg_duration_s:95,
+   template_count:42,inventory_count:8,user_count:18,team_count:4},
+  {org_id:2,org_name:'Security Operations',total_jobs_30d:1840,success_jobs_30d:1780,
+   failed_jobs_30d:45,canceled_jobs_30d:15,success_rate_pct:96.7,avg_duration_s:62,
+   template_count:28,inventory_count:5,user_count:11,team_count:3},
+  {org_id:3,org_name:'Data & ML',total_jobs_30d:956,success_jobs_30d:891,
+   failed_jobs_30d:55,canceled_jobs_30d:10,success_rate_pct:93.2,avg_duration_s:310,
+   template_count:15,inventory_count:4,user_count:7,team_count:2},
+  {org_id:4,org_name:'DevOps Core',total_jobs_30d:2104,success_jobs_30d:1960,
+   failed_jobs_30d:120,canceled_jobs_30d:24,success_rate_pct:93.2,avg_duration_s:78,
+   template_count:36,inventory_count:6,user_count:14,team_count:3},
+  {org_id:5,org_name:'Networking',total_jobs_30d:654,success_jobs_30d:640,
+   failed_jobs_30d:10,canceled_jobs_30d:4,success_rate_pct:97.9,avg_duration_s:42,
+   template_count:12,inventory_count:3,user_count:5,team_count:1},
+];
+const MOCK_SUMMARY={
+  totals:{total_jobs:8764,successful_jobs:8291,failed_jobs:370,
+    canceled_jobs:103,success_rate_pct:94.6,avg_duration_s:117},
+  counts:{org_count:5,template_count:133,inventory_count:26,
+    user_count:55,team_count:13,host_count:1420},
+  orgs:MOCK_ORGS,
+};
+const MOCK_JOBS=Array.from({length:50},(_,i)=>({
+  id:i+1, awx_job_id:20000+i, job_type:Math.random()>.3?'job':'workflow_job',
+  org_name:MOCK_ORGS[i%5].org_name,
+  template_name:`Template-${(i%8)+1}`,
+  status:['successful','successful','successful','failed','canceled'][i%5],
+  started:new Date(Date.now()-Math.random()*7*864e5).toISOString(),
+  finished:new Date(Date.now()-Math.random()*7*864e5+3e5).toISOString(),
+  elapsed:Math.round(30+Math.random()*400),
+}));
+const MOCK_RBAC={
+  users:[
+    {id:1,username:'jsmith',first_name:'John',last_name:'Smith',email:'jsmith@example.com',is_superuser:true,roles:['Admin']},
+    {id:2,username:'amaria',first_name:'Ana',last_name:'Maria',email:'amaria@example.com',is_superuser:false,roles:['Member']},
+    {id:3,username:'tlee',first_name:'Tom',last_name:'Lee',email:'tlee@example.com',is_superuser:false,roles:['Auditor']},
+  ],
+  teams:[
+    {id:1,name:'Infra Team',description:'Core infrastructure',member_count:6},
+    {id:2,name:'Release Team',description:'CI/CD and releases',member_count:4},
+  ],
+  team_members:[
+    {team_id:1,user_id:1,username:'jsmith',first_name:'John',last_name:'Smith'},
+    {team_id:1,user_id:2,username:'amaria',first_name:'Ana',last_name:'Maria'},
+    {team_id:2,user_id:3,username:'tlee',first_name:'Tom',last_name:'Lee'},
+  ],
+};
+
+// ─────────────────────────────────────────────────────────
+// API helpers
+// ─────────────────────────────────────────────────────────
+async function apiFetch(path){
+  const r=await fetch(API+path);
+  if(!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`);
+  return r.json();
+}
+
+function useApi(fetcher, deps=[]){
+  const [data,setData]=useState(null);
+  const [loading,setLoading]=useState(true);
+  const [error,setError]=useState(null);
+  useEffect(()=>{
+    setLoading(true); setError(null);
+    fetcher().then(d=>{setData(d);setLoading(false)})
+             .catch(e=>{setError(e.message);setLoading(false)});
+  }, deps);
+  return {data,loading,error};
+}
+
+// ─────────────────────────────────────────────────────────
+// Utility components
+// ─────────────────────────────────────────────────────────
+const PERIODS=['day','week','month','quarter','year'];
+
+function PeriodBar({value,onChange}){
+  return (
+    <div className="period-bar">
+      {PERIODS.map(p=>(
+        <button key={p} className={`period-btn${value===p?' active':''}`} onClick={()=>onChange(p)}>
+          {p.charAt(0).toUpperCase()+p.slice(1)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function StatusBadge({status}){
+  const cls={successful:'badge-success',failed:'badge-danger',
+    error:'badge-danger',canceled:'badge-warning',running:'badge-info'}[status]||'badge-muted';
+  return <span className={`badge ${cls}`}>{status}</span>;
+}
+
+function StatCard({title,value,sub,color}){
+  return (
+    <div className="card">
+      <div className="card-title">{title}</div>
+      <div className="card-value" style={color?{color}:undefined}>{value??'—'}</div>
+      {sub && <div style={{fontSize:12,color:'var(--muted)',marginTop:4}}>{sub}</div>}
+    </div>
+  );
+}
+
+function Spinner(){return <div className="center"><div className="spinner"/></div>}
+function ErrorBox({msg}){return <div className="error-box">⚠ {msg}</div>}
+
+function CustomTooltip({active,payload,label}){
+  if(!active||!payload?.length) return null;
+  return (
+    <div className="custom-tooltip">
+      <div style={{fontWeight:600,marginBottom:6}}>{label}</div>
+      {payload.map((p,i)=>(
+        <div key={i} style={{color:p.color}}>{p.name}: <b>{typeof p.value==='number'?p.value.toLocaleString():p.value}</b></div>
+      ))}
+    </div>
+  );
+}
+
+function SuccessRateBar({rate}){
+  const color = rate>=95?'var(--success)':rate>=85?'var(--warning)':'var(--danger)';
+  return (
+    <div style={{display:'flex',alignItems:'center',gap:8}}>
+      <div className="prog-bar" style={{flex:1}}>
+        <div className="prog-fill" style={{width:`${rate}%`,background:color}}/>
+      </div>
+      <span style={{color,fontWeight:600,fontSize:12,minWidth:42}}>{rate}%</span>
+    </div>
+  );
+}
+
+function fmtDuration(s){
+  if(!s) return '—';
+  if(s<60) return `${Math.round(s)}s`;
+  if(s<3600) return `${Math.round(s/60)}m ${Math.round(s%60)}s`;
+  return `${Math.floor(s/3600)}h ${Math.round((s%3600)/60)}m`;
+}
+function fmtDate(iso){
+  if(!iso) return '—';
+  return new Date(iso).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+}
+
+// ─────────────────────────────────────────────────────────
+// PAGES
+// ─────────────────────────────────────────────────────────
+
+// ── Dashboard (Global Summary) ────────────────────────────
+function DashboardPage({onOrgClick}){
+  const [period,setPeriod]=useState('month');
+  const {data:summary,loading:sl,error:se}=useApi(
+    ()=>MOCK?Promise.resolve(MOCK_SUMMARY):apiFetch('/summary'), []);
+  const {data:trend,loading:tl,error:te}=useApi(
+    ()=>MOCK?Promise.resolve({rows:genTrend(30)}):apiFetch(`/trend?period=${period}`), [period]);
+
+  const PIE_COLORS=['#22c55e','#ef4444','#f59e0b'];
+
+  if(sl||tl) return <Spinner/>;
+  if(se||te) return <ErrorBox msg={se||te}/>;
+
+  const t=summary.totals||{};
+  const c=summary.counts||{};
+  const pieData=[
+    {name:'Successful',value:t.successful_jobs||0},
+    {name:'Failed',value:t.failed_jobs||0},
+    {name:'Canceled',value:t.canceled_jobs||0},
+  ];
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:20}}>
+      {MOCK && <div style={{background:'rgba(245,158,11,.1)',border:'1px solid rgba(245,158,11,.3)',
+        borderRadius:8,padding:'8px 16px',fontSize:12,color:'var(--warning)'}}>
+        🚧 Demo mode — displaying mock data. Set <code>window.AWX_PORTAL_CONFIG.useMockData=false</code> for live data.
+      </div>}
+
+      {/* KPI strip */}
+      <div className="grid-4">
+        <StatCard title="Total Jobs (30d)" value={(t.total_jobs||0).toLocaleString()}/>
+        <StatCard title="Success Rate" value={`${t.success_rate_pct||0}%`}
+          color={t.success_rate_pct>=95?'var(--success)':t.success_rate_pct>=85?'var(--warning)':'var(--danger)'}/>
+        <StatCard title="Failed Jobs" value={(t.failed_jobs||0).toLocaleString()} color="var(--danger)"/>
+        <StatCard title="Avg Duration" value={fmtDuration(t.avg_duration_s)}/>
+      </div>
+
+      {/* Infra counts */}
+      <div className="grid-4">
+        <StatCard title="Organizations" value={c.org_count}/>
+        <StatCard title="Job Templates" value={c.template_count}/>
+        <StatCard title="Users" value={c.user_count}/>
+        <StatCard title="Managed Hosts" value={(c.host_count||0).toLocaleString()}/>
+      </div>
+
+      {/* Charts row */}
+      <div className="grid-2">
+        <div className="card">
+          <div className="section-header">
+            <span className="section-title">Daily Job Trend</span>
+            <PeriodBar value={period} onChange={setPeriod}/>
+          </div>
+          <ResponsiveContainer width="100%" height={220}>
+            <AreaChart data={trend?.rows||[]} margin={{left:-10}}>
+              <defs>
+                <linearGradient id="gs" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#22c55e" stopOpacity={0.3}/>
+                  <stop offset="95%" stopColor="#22c55e" stopOpacity={0}/>
+                </linearGradient>
+                <linearGradient id="gf" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#ef4444" stopOpacity={0.3}/>
+                  <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)"/>
+              <XAxis dataKey="metric_date" tick={{fontSize:11,fill:'var(--muted)'}} tickLine={false}
+                tickFormatter={v=>v.slice(5)}/>
+              <YAxis tick={{fontSize:11,fill:'var(--muted)'}} tickLine={false} axisLine={false}/>
+              <Tooltip content={<CustomTooltip/>}/>
+              <Legend wrapperStyle={{fontSize:12}}/>
+              <Area type="monotone" dataKey="successful_jobs" name="Successful"
+                stroke="#22c55e" fill="url(#gs)" strokeWidth={2}/>
+              <Area type="monotone" dataKey="failed_jobs" name="Failed"
+                stroke="#ef4444" fill="url(#gf)" strokeWidth={2}/>
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="card">
+          <div className="section-header">
+            <span className="section-title">Job Outcomes (30d)</span>
+          </div>
+          <div style={{display:'flex',alignItems:'center',gap:16}}>
+            <ResponsiveContainer width="50%" height={200}>
+              <PieChart>
+                <Pie data={pieData} cx="50%" cy="50%" innerRadius={55} outerRadius={80}
+                  dataKey="value" strokeWidth={0}>
+                  {pieData.map((e,i)=><Cell key={i} fill={PIE_COLORS[i]}/>)}
+                </Pie>
+                <Tooltip formatter={(v)=>v.toLocaleString()}/>
+              </PieChart>
+            </ResponsiveContainer>
+            <div style={{flex:1,display:'flex',flexDirection:'column',gap:10}}>
+              {pieData.map((e,i)=>(
+                <div key={i}>
+                  <div style={{display:'flex',justifyContent:'space-between',
+                    fontSize:12,marginBottom:4}}>
+                    <span style={{color:PIE_COLORS[i]}}>{e.name}</span>
+                    <span style={{fontWeight:600}}>{e.value.toLocaleString()}</span>
+                  </div>
+                  <div className="prog-bar">
+                    <div className="prog-fill" style={{
+                      width:`${t.total_jobs?Math.round(e.value/t.total_jobs*100):0}%`,
+                      background:PIE_COLORS[i]}}/>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Success rate by day */}
+      <div className="card">
+        <div className="section-header">
+          <span className="section-title">Success Rate Trend (%)</span>
+        </div>
+        <ResponsiveContainer width="100%" height={180}>
+          <LineChart data={trend?.rows||[]} margin={{left:-10}}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)"/>
+            <XAxis dataKey="metric_date" tick={{fontSize:11,fill:'var(--muted)'}} tickLine={false}
+              tickFormatter={v=>v.slice(5)}/>
+            <YAxis domain={[0,100]} tick={{fontSize:11,fill:'var(--muted)'}} tickLine={false}
+              axisLine={false} unit="%"/>
+            <Tooltip content={<CustomTooltip/>} formatter={v=>[`${v}%`,'Success Rate']}/>
+            <Line type="monotone" dataKey="success_rate_pct" name="Success Rate %"
+              stroke="var(--accent)" strokeWidth={2} dot={false}/>
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Org table */}
+      <div className="card">
+        <div className="section-header">
+          <span className="section-title">Organizations</span>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Organization</th><th>Jobs (30d)</th><th>Success Rate</th>
+                <th>Failed</th><th>Avg Duration</th><th>Templates</th><th>Users</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(summary.orgs||[]).map(o=>(
+                <tr key={o.org_id} style={{cursor:'pointer'}} onClick={()=>onOrgClick(o)}>
+                  <td><b>{o.org_name}</b></td>
+                  <td>{(o.total_jobs_30d||0).toLocaleString()}</td>
+                  <td style={{minWidth:160}}><SuccessRateBar rate={o.success_rate_pct||0}/></td>
+                  <td style={{color:'var(--danger)'}}>{o.failed_jobs_30d||0}</td>
+                  <td>{fmtDuration(o.avg_duration_s)}</td>
+                  <td>{o.template_count||0}</td>
+                  <td>{o.user_count||0}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Org Detail ────────────────────────────────────────────
+function OrgDetailPage({org,onBack}){
+  const [period,setPeriod]=useState('month');
+  const [tab,setTab]=useState('overview');
+
+  const {data:trend,loading:tl}=useApi(
+    ()=>MOCK?Promise.resolve({rows:genTrend(30,org.total_jobs_30d/30||80,0.93)}):
+      apiFetch(`/orgs/${org.org_id}/trend?period=${period}`), [org.org_id,period]);
+
+  const {data:templates,loading:tmpl}=useApi(
+    ()=>MOCK?Promise.resolve({templates:[
+      {template_id:101,template_name:'Deploy App',total_jobs:410,successful_jobs:395,failed_jobs:12,canceled_jobs:3,success_rate_pct:96.3,avg_duration_s:95},
+      {template_id:102,template_name:'Patch RHEL',total_jobs:280,successful_jobs:265,failed_jobs:12,canceled_jobs:3,success_rate_pct:94.6,avg_duration_s:220},
+      {template_id:103,template_name:'Run Backup',total_jobs:180,successful_jobs:178,failed_jobs:2,canceled_jobs:0,success_rate_pct:98.9,avg_duration_s:55},
+      {template_id:104,template_name:'Healthcheck',total_jobs:900,successful_jobs:870,failed_jobs:25,canceled_jobs:5,success_rate_pct:96.7,avg_duration_s:18},
+    ]}):apiFetch(`/orgs/${org.org_id}/templates?period=${period}`), [org.org_id,period]);
+
+  const {data:rbac,loading:rl}=useApi(
+    ()=>MOCK?Promise.resolve({...MOCK_RBAC,org_id:org.org_id}):
+      apiFetch(`/orgs/${org.org_id}/rbac`), [org.org_id]);
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:20}}>
+      <div>
+        <button className="back-btn" onClick={onBack}>← Back</button>
+        <div className="section-header">
+          <h2 style={{fontSize:20,fontWeight:700}}>{org.org_name}</h2>
+          <PeriodBar value={period} onChange={setPeriod}/>
+        </div>
+      </div>
+
+      <div className="grid-4">
+        <StatCard title="Total Jobs" value={(org.total_jobs_30d||0).toLocaleString()}/>
+        <StatCard title="Success Rate" value={`${org.success_rate_pct||0}%`}
+          color={org.success_rate_pct>=95?'var(--success)':org.success_rate_pct>=85?'var(--warning)':'var(--danger)'}/>
+        <StatCard title="Templates" value={org.template_count}/>
+        <StatCard title="Team Members" value={org.user_count}/>
+      </div>
+
+      {/* Tab bar */}
+      <div style={{display:'flex',gap:4,borderBottom:'1px solid var(--border)',paddingBottom:0}}>
+        {['overview','templates','rbac'].map(t=>(
+          <button key={t} onClick={()=>setTab(t)} style={{
+            padding:'8px 18px',background:'none',border:'none',cursor:'pointer',
+            color:tab===t?'var(--accent)':'var(--muted)',fontWeight:tab===t?600:400,
+            borderBottom:tab===t?'2px solid var(--accent)':'2px solid transparent',
+            fontSize:13,transition:'all .15s',
+          }}>
+            {t.charAt(0).toUpperCase()+t.slice(1)}
+          </button>
+        ))}
+      </div>
+
+      {tab==='overview' && (
+        <div style={{display:'flex',flexDirection:'column',gap:16}}>
+          <div className="card">
+            <div className="section-title" style={{marginBottom:12}}>Daily Trend</div>
+            {tl?<Spinner/>:(
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={trend?.rows||[]} margin={{left:-10}}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)"/>
+                  <XAxis dataKey="metric_date" tick={{fontSize:11,fill:'var(--muted)'}} tickLine={false}
+                    tickFormatter={v=>v.slice(5)}/>
+                  <YAxis tick={{fontSize:11,fill:'var(--muted)'}} tickLine={false} axisLine={false}/>
+                  <Tooltip content={<CustomTooltip/>}/>
+                  <Legend wrapperStyle={{fontSize:12}}/>
+                  <Bar dataKey="successful_jobs" name="Successful" fill="#22c55e" stackId="a" radius={[0,0,0,0]}/>
+                  <Bar dataKey="failed_jobs"     name="Failed"     fill="#ef4444" stackId="a"/>
+                  <Bar dataKey="canceled_jobs"   name="Canceled"   fill="#f59e0b" stackId="a" radius={[3,3,0,0]}/>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </div>
+      )}
+
+      {tab==='templates' && (
+        <div className="card">
+          <div className="section-title" style={{marginBottom:12}}>Job Templates</div>
+          {tmpl?<Spinner/>:(
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Template</th><th>Jobs</th><th>Success Rate</th>
+                    <th>Failed</th><th>Avg Duration</th></tr>
+                </thead>
+                <tbody>
+                  {(templates?.templates||[]).map(t=>(
+                    <tr key={t.template_id}>
+                      <td><b>{t.template_name}</b></td>
+                      <td>{(t.total_jobs||0).toLocaleString()}</td>
+                      <td style={{minWidth:150}}><SuccessRateBar rate={t.success_rate_pct||0}/></td>
+                      <td style={{color:'var(--danger)'}}>{t.failed_jobs||0}</td>
+                      <td>{fmtDuration(t.avg_duration_s)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab==='rbac' && (
+        <div style={{display:'flex',flexDirection:'column',gap:16}}>
+          {rl?<Spinner/>:(
+            <>
+              <div className="card">
+                <div className="section-title" style={{marginBottom:12}}>Users & Roles</div>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr><th>Username</th><th>Name</th><th>Email</th><th>Roles</th><th>Flags</th></tr>
+                    </thead>
+                    <tbody>
+                      {(rbac?.users||[]).map(u=>(
+                        <tr key={u.id}>
+                          <td><code style={{fontSize:12}}>{u.username}</code></td>
+                          <td>{u.first_name} {u.last_name}</td>
+                          <td style={{color:'var(--muted)'}}>{u.email}</td>
+                          <td>{(u.roles||[]).map(r=>(
+                            <span key={r} className="badge badge-info" style={{marginRight:4}}>{r}</span>
+                          ))}</td>
+                          <td>
+                            {u.is_superuser&&<span className="badge badge-danger" style={{marginRight:4}}>Superuser</span>}
+                            {u.is_system_auditor&&<span className="badge badge-warning">Auditor</span>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="card">
+                <div className="section-title" style={{marginBottom:12}}>Teams</div>
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>Team</th><th>Description</th><th>Members</th></tr></thead>
+                    <tbody>
+                      {(rbac?.teams||[]).map(t=>(
+                        <tr key={t.id}>
+                          <td><b>{t.name}</b></td>
+                          <td style={{color:'var(--muted)'}}>{t.description}</td>
+                          <td>{t.member_count}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Jobs Page ─────────────────────────────────────────────
+function JobsPage(){
+  const [page,setPage]=useState(1);
+  const [status,setStatus]=useState('');
+  const [jobType,setJobType]=useState('');
+  const [search,setSearch]=useState('');
+
+  const params=new URLSearchParams({page,page_size:50});
+  if(status) params.append('status',status);
+  if(jobType) params.append('job_type',jobType);
+  if(search) params.append('search',search);
+
+  const {data,loading,error}=useApi(
+    ()=>MOCK?Promise.resolve({total:MOCK_JOBS.length,page:1,pages:1,jobs:MOCK_JOBS}):
+      apiFetch(`/jobs?${params}`), [page,status,jobType,search]);
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:16}}>
+      <div className="section-header">
+        <h2 className="section-title">Job Executions</h2>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          <input className="search-input" placeholder="Search template…"
+            value={search} onChange={e=>{setSearch(e.target.value);setPage(1)}}/>
+          <select className="select-input" value={status}
+            onChange={e=>{setStatus(e.target.value);setPage(1)}}>
+            <option value="">All Statuses</option>
+            <option value="successful">Successful</option>
+            <option value="failed">Failed</option>
+            <option value="canceled">Canceled</option>
+            <option value="running">Running</option>
+          </select>
+          <select className="select-input" value={jobType}
+            onChange={e=>{setJobType(e.target.value);setPage(1)}}>
+            <option value="">All Types</option>
+            <option value="job">Job</option>
+            <option value="workflow_job">Workflow Job</option>
+          </select>
+        </div>
+      </div>
+
+      {loading?<Spinner/>:error?<ErrorBox msg={error}/>:(
+        <div className="card">
+          <div style={{display:'flex',justifyContent:'space-between',marginBottom:12,fontSize:13,color:'var(--muted)'}}>
+            <span>{(data?.total||0).toLocaleString()} jobs</span>
+            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+              <button disabled={page<=1} onClick={()=>setPage(p=>p-1)}
+                style={{background:'var(--surface2)',border:'1px solid var(--border)',
+                  borderRadius:6,padding:'4px 10px',cursor:'pointer',color:'var(--text)',
+                  opacity:page<=1?.4:1}}>←</button>
+              <span>Page {page} / {data?.pages||1}</span>
+              <button disabled={page>=(data?.pages||1)} onClick={()=>setPage(p=>p+1)}
+                style={{background:'var(--surface2)',border:'1px solid var(--border)',
+                  borderRadius:6,padding:'4px 10px',cursor:'pointer',color:'var(--text)',
+                  opacity:page>=(data?.pages||1)?.4:1}}>→</button>
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr><th>ID</th><th>Template</th><th>Org</th><th>Type</th>
+                  <th>Status</th><th>Started</th><th>Duration</th></tr>
+              </thead>
+              <tbody>
+                {(data?.jobs||[]).map(j=>(
+                  <tr key={j.id}>
+                    <td style={{color:'var(--muted)',fontFamily:'monospace'}}>{j.awx_job_id}</td>
+                    <td><b>{j.template_name||'—'}</b></td>
+                    <td style={{color:'var(--muted)'}}>{j.org_name||'—'}</td>
+                    <td><span className="badge badge-muted">{j.job_type}</span></td>
+                    <td><StatusBadge status={j.status}/></td>
+                    <td style={{color:'var(--muted)',fontSize:12}}>{fmtDate(j.started)}</td>
+                    <td>{fmtDuration(j.elapsed)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Sync Status ───────────────────────────────────────────
+function SyncPage(){
+  const {data,loading,error}=useApi(
+    ()=>MOCK?Promise.resolve([
+      {entity:'jobs',last_synced_at:new Date().toISOString(),last_status:'ok',records_synced:8764},
+      {entity:'organizations',last_synced_at:new Date().toISOString(),last_status:'ok',records_synced:5},
+      {entity:'users',last_synced_at:new Date().toISOString(),last_status:'ok',records_synced:55},
+      {entity:'workflow_jobs',last_synced_at:new Date().toISOString(),last_status:'ok',records_synced:342},
+      {entity:'job_templates',last_synced_at:new Date().toISOString(),last_status:'ok',records_synced:133},
+      {entity:'teams',last_synced_at:new Date().toISOString(),last_status:'ok',records_synced:13},
+    ]):apiFetch('/sync'), []);
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:16}}>
+      <h2 className="section-title">Sync Status</h2>
+      {loading?<Spinner/>:error?<ErrorBox msg={error}/>:(
+        <div className="card">
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Entity</th><th>Last Synced</th><th>Status</th><th>Records</th></tr>
+              </thead>
+              <tbody>
+                {(data||[]).map(s=>(
+                  <tr key={s.entity}>
+                    <td><code style={{fontSize:12}}>{s.entity}</code></td>
+                    <td style={{color:'var(--muted)',fontSize:12}}>{s.last_synced_at?fmtDate(s.last_synced_at):'Never'}</td>
+                    <td>{s.last_status==='ok'?
+                      <span className="badge badge-success">OK</span>:
+                      <span className="badge badge-danger">{s.last_status}</span>}
+                    </td>
+                    <td>{(s.records_synced||0).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────
+// APP SHELL
+// ─────────────────────────────────────────────────────────
+const NAV=[
+  {id:'dashboard',label:'Dashboard',icon:'📊'},
+  {id:'orgs',label:'Organizations',icon:'🏢'},
+  {id:'jobs',label:'Jobs',icon:'⚙️'},
+  {id:'sync',label:'Sync Status',icon:'🔄'},
+];
+
+function App(){
+  const [page,setPage]=useState('dashboard');
+  const [selectedOrg,setSelectedOrg]=useState(null);
+
+  function nav(id){setPage(id);setSelectedOrg(null);}
+
+  return (
+    <div id="root">
+      <div className="topbar">
+        <span className="topbar-logo">AWX<span>Analytics</span></span>
+        <span style={{color:'var(--muted)',fontSize:13}}>{window.AWX_PORTAL_CONFIG.orgName}</span>
+        <span className="topbar-spacer"/>
+        {MOCK && <span className="topbar-demo">DEMO</span>}
+        <span className="topbar-sync" title="Data refreshes every 5 minutes">⟳ 5min sync</span>
+      </div>
+      <div className="layout">
+        <nav className="sidebar">
+          {NAV.map(n=>(
+            <div key={n.id} className={`nav-item${page===n.id&&!selectedOrg?' active':''}`}
+              onClick={()=>nav(n.id)}>
+              <span>{n.icon}</span><span>{n.label}</span>
+            </div>
+          ))}
+        </nav>
+        <main className="main">
+          {page==='dashboard' && !selectedOrg &&
+            <DashboardPage onOrgClick={o=>{setSelectedOrg(o);setPage('org-detail');}}/>}
+          {page==='org-detail' && selectedOrg &&
+            <OrgDetailPage org={selectedOrg} onBack={()=>nav('dashboard')}/>}
+          {page==='orgs' &&
+            <OrgsListPage onOrgClick={o=>{setSelectedOrg(o);setPage('org-detail');}}/>}
+          {page==='jobs'  && <JobsPage/>}
+          {page==='sync'  && <SyncPage/>}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+// ── Orgs list page ────────────────────────────────────────
+function OrgsListPage({onOrgClick}){
+  const [search,setSearch]=useState('');
+  const {data,loading,error}=useApi(
+    ()=>MOCK?Promise.resolve(MOCK_ORGS):apiFetch('/orgs'), []);
+
+  const filtered=useMemo(()=>(data||[]).filter(o=>
+    o.org_name.toLowerCase().includes(search.toLowerCase())), [data,search]);
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:16}}>
+      <div className="section-header">
+        <h2 className="section-title">Organizations</h2>
+        <input className="search-input" placeholder="Search orgs…"
+          value={search} onChange={e=>setSearch(e.target.value)}/>
+      </div>
+      {loading?<Spinner/>:error?<ErrorBox msg={error}/>:(
+        <div className="grid-3">
+          {filtered.map(o=>(
+            <div key={o.org_id} className="org-card" onClick={()=>onOrgClick(o)}>
+              <div className="org-card-name">{o.org_name}</div>
+              <SuccessRateBar rate={o.success_rate_pct||0}/>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'6px 16px',marginTop:10,fontSize:12,color:'var(--muted)'}}>
+                <span>Jobs (30d): <b style={{color:'var(--text)'}}>{(o.total_jobs_30d||0).toLocaleString()}</b></span>
+                <span>Failed: <b style={{color:'var(--danger)'}}>{o.failed_jobs_30d||0}</b></span>
+                <span>Templates: <b style={{color:'var(--text)'}}>{o.template_count}</b></span>
+                <span>Users: <b style={{color:'var(--text)'}}>{o.user_count}</b></span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
