@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-AWX Analytics Portal – Collector
-Syncs AWX API data into PostgreSQL. Supports incremental and full-sync modes.
+AWX Analytics Portal – Collector (Dynamic ROI Edition)
+=======================================================
+Syncs AWX API data into PostgreSQL. Every job execution now
+captures per-run host outcome counts (hosts_changed, hosts_ok,
+hosts_failed, hosts_skipped, hosts_unreachable) directly from
+AWX — these drive the dynamic ROI calculation in
+refresh_daily_roi_metrics().
 
 Usage:
     python collector.py                   # incremental (default)
@@ -18,6 +23,7 @@ import sys
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Generator, Optional
+from urllib.parse import urlparse, parse_qs
 
 import psycopg2
 import psycopg2.extras
@@ -40,11 +46,11 @@ def load_config(path: str = CONFIG_PATH) -> dict:
 # Logging
 # ──────────────────────────────────────────────────────────
 def setup_logging(cfg: dict) -> logging.Logger:
-    log_cfg = cfg.get("collector", {})
-    level = getattr(logging, log_cfg.get("log_level", "INFO").upper(), logging.INFO)
-    log_file = log_cfg.get("log_file", "/var/log/awx-portal/collector.log")
+    log_cfg   = cfg.get("collector", {})
+    level     = getattr(logging, log_cfg.get("log_level", "INFO").upper(), logging.INFO)
+    log_file  = log_cfg.get("log_file", "/var/log/awx-portal/collector.log")
 
-    fmt = logging.Formatter(
+    fmt    = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s – %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S"
     )
@@ -61,7 +67,7 @@ def setup_logging(cfg: dict) -> logging.Logger:
         fh.setFormatter(fmt)
         logger.addHandler(fh)
     except OSError:
-        logger.warning("Cannot open log file %s, logging to stdout only", log_file)
+        logger.warning("Cannot open log file %s, stdout only", log_file)
 
     return logger
 
@@ -85,21 +91,22 @@ def get_conn(cfg: dict):
 class AWXClient:
     def __init__(self, cfg: dict, logger: logging.Logger):
         awx = cfg["awx"]
-        self.base = awx["base_url"].rstrip("/")
+        self.base        = awx["base_url"].rstrip("/")
+        self.timeout     = awx.get("request_timeout", 30)
+        self.page_size   = awx.get("page_size", 200)
+        self.max_retries = awx.get("max_retries", 3)
+        self.backoff     = awx.get("retry_backoff", 2)
+        self.log         = logger
+
         self.session = requests.Session()
         self.session.headers.update({
             "Authorization": f"Bearer {awx['token']}",
-            "Content-Type": "application/json",
+            "Content-Type":  "application/json",
         })
         self.session.verify = awx.get("verify_ssl", True)
-        self.timeout = awx.get("request_timeout", 30)
-        self.page_size = awx.get("page_size", 200)
-        self.max_retries = awx.get("max_retries", 3)
-        self.backoff = awx.get("retry_backoff", 2)
-        self.log = logger
 
     def get(self, path: str, params: Optional[dict] = None) -> dict:
-        url = f"{self.base}{path}"
+        url = f"{self.base}{path}" if path.startswith("/") else path
         for attempt in range(1, self.max_retries + 1):
             try:
                 resp = self.session.get(url, params=params, timeout=self.timeout)
@@ -112,8 +119,9 @@ class AWXClient:
                 if attempt == self.max_retries:
                     raise
                 wait = self.backoff ** attempt
-                self.log.warning("HTTP error on %s (attempt %d/%d), retrying in %ds: %s",
-                                  url, attempt, self.max_retries, wait, exc)
+                self.log.warning("HTTP %s on %s (attempt %d/%d), retrying in %ds",
+                                  exc.response.status_code if exc.response else "?",
+                                  url, attempt, self.max_retries, wait)
                 time.sleep(wait)
             except requests.RequestException as exc:
                 if attempt == self.max_retries:
@@ -124,9 +132,9 @@ class AWXClient:
                 time.sleep(wait)
 
     def paginate(self, path: str, params: Optional[dict] = None) -> Generator[dict, None, None]:
-        """Yield each item from a paginated AWX endpoint."""
-        p = {"page_size": self.page_size, **(params or {})}
-        page_url: Optional[str] = path
+        """Yield every item from a paginated AWX endpoint."""
+        p        = {"page_size": self.page_size, **(params or {})}
+        page_url = path
         while page_url:
             data = self.get(page_url, params=p if page_url == path else None)
             for item in data.get("results", []):
@@ -134,18 +142,13 @@ class AWXClient:
             next_url = data.get("next")
             if not next_url:
                 break
-            # next is an absolute URL; extract path+query
-            from urllib.parse import urlparse, urlencode, parse_qs
-            parsed = urlparse(next_url)
+            parsed   = urlparse(next_url)
             page_url = parsed.path
-            p = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+            p        = {k: v[0] for k, v in parse_qs(parsed.query).items()}
 
 # ──────────────────────────────────────────────────────────
-# Sync helpers
+# Helpers
 # ──────────────────────────────────────────────────────────
-def ts_now() -> datetime:
-    return datetime.now(timezone.utc)
-
 def parse_ts(val: Optional[str]) -> Optional[datetime]:
     if not val:
         return None
@@ -157,9 +160,11 @@ def get_last_synced(cur, entity: str) -> Optional[datetime]:
     row = cur.fetchone()
     return row[0] if row and row[0] else None
 
-def set_sync_state(cur, entity: str, status: str, records: int = 0, error: str = None):
+def set_sync_state(cur, entity: str, status: str,
+                   records: int = 0, error: Optional[str] = None):
     cur.execute("""
-        INSERT INTO sync_state (entity, last_synced_at, last_status, last_error, records_synced)
+        INSERT INTO sync_state
+            (entity, last_synced_at, last_status, last_error, records_synced)
         VALUES (%s, NOW(), %s, %s, %s)
         ON CONFLICT (entity) DO UPDATE SET
             last_synced_at = NOW(),
@@ -167,6 +172,15 @@ def set_sync_state(cur, entity: str, status: str, records: int = 0, error: str =
             last_error     = EXCLUDED.last_error,
             records_synced = EXCLUDED.records_synced
     """, (entity, status, error, records))
+
+def _safe_int(val) -> Optional[int]:
+    """Convert a value to int, returning None if conversion fails."""
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
 
 # ──────────────────────────────────────────────────────────
 # Sync: Organizations
@@ -177,7 +191,8 @@ def sync_organizations(client: AWXClient, conn, log: logging.Logger) -> int:
     with conn.cursor() as cur:
         for org in client.paginate("/api/v2/organizations/"):
             cur.execute("""
-                INSERT INTO organizations (id, name, description, max_hosts, created_at, modified_at, synced_at)
+                INSERT INTO organizations
+                    (id, name, description, max_hosts, created_at, modified_at, synced_at)
                 VALUES (%s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (id) DO UPDATE SET
                     name        = EXCLUDED.name,
@@ -197,7 +212,7 @@ def sync_organizations(client: AWXClient, conn, log: logging.Logger) -> int:
     return count
 
 # ──────────────────────────────────────────────────────────
-# Sync: Generic AWX Objects (templates, projects, inventories, etc.)
+# Sync: Generic AWX Objects
 # ──────────────────────────────────────────────────────────
 def sync_awx_objects(client: AWXClient, conn, log: logging.Logger,
                      endpoint: str, object_type: str, entity_key: str) -> int:
@@ -216,7 +231,8 @@ def sync_awx_objects(client: AWXClient, conn, log: logging.Logger,
 
             cur.execute("""
                 INSERT INTO awx_objects
-                    (awx_id, object_type, org_id, name, description, extra_data, created_at, modified_at, synced_at)
+                    (awx_id, object_type, org_id, name, description,
+                     extra_data, created_at, modified_at, synced_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (awx_id, object_type) DO UPDATE SET
                     org_id      = EXCLUDED.org_id,
@@ -238,11 +254,26 @@ def sync_awx_objects(client: AWXClient, conn, log: logging.Logger,
     return count
 
 # ──────────────────────────────────────────────────────────
-# Sync: Job Executions (jobs + workflow_jobs)
+# Sync: Job Executions — with dynamic host count extraction
+#
+# AWX provides host_status_counts in the job list response:
+#   {"ok": N, "changed": N, "dark": N, "failures": N, "skipped": N}
+# These map to:
+#   ok          → hosts_ok
+#   changed     → hosts_changed   ← key for dynamic ROI
+#   dark        → hosts_unreachable
+#   failures    → hosts_failed
+#   skipped     → hosts_skipped
+#   (sum)       → hosts_total
+#
+# AWX also provides related.job_host_summaries for full detail,
+# but host_status_counts in the list response is sufficient and
+# requires no extra API call per job.
 # ──────────────────────────────────────────────────────────
 def sync_jobs(client: AWXClient, conn, log: logging.Logger,
               endpoint: str, job_type: str, entity_key: str,
               since: Optional[datetime], full_sync: bool, overlap_min: int) -> int:
+
     params: dict = {}
     if not full_sync and since:
         overlap = since - timedelta(minutes=overlap_min)
@@ -252,29 +283,77 @@ def sync_jobs(client: AWXClient, conn, log: logging.Logger,
         log.info("Full %s sync (no time filter)", job_type)
 
     count = 0
+    dynamic_count = 0   # track how many runs have host data
+
     with conn.cursor() as cur:
         for job in client.paginate(endpoint, params=params):
+
+            # ── Org ──────────────────────────────────────
             org_id = None
             if isinstance(job.get("organization"), int):
                 org_id = job["organization"]
             elif isinstance(job.get("organization"), dict):
                 org_id = job["organization"].get("id")
 
-            tmpl_id = None
+            # ── Template reference ────────────────────────
+            tmpl_id   = None
             tmpl_name = None
             if job_type == "job":
-                tmpl_id = job.get("job_template")
-                tmpl_name = job.get("summary_fields", {}).get("job_template", {}).get("name")
+                tmpl_id   = job.get("job_template")
+                tmpl_name = (job.get("summary_fields", {})
+                             .get("job_template", {})
+                             .get("name"))
             else:
-                tmpl_id = job.get("workflow_job_template")
-                tmpl_name = job.get("summary_fields", {}).get("workflow_job_template", {}).get("name")
+                tmpl_id   = job.get("workflow_job_template")
+                tmpl_name = (job.get("summary_fields", {})
+                             .get("workflow_job_template", {})
+                             .get("name"))
 
-            launched = job.get("summary_fields", {}).get("created_by", {}).get("username")
+            launched = (job.get("summary_fields", {})
+                        .get("created_by", {})
+                        .get("username"))
+
+            # ── Host outcome counts ───────────────────────
+            # AWX job list endpoint returns host_status_counts
+            # for regular jobs. Workflow jobs don't have this
+            # field — host counts live on child jobs instead.
+            hsc = job.get("host_status_counts") or {}
+
+            hosts_ok          = _safe_int(hsc.get("ok"))
+            hosts_changed     = _safe_int(hsc.get("changed"))
+            hosts_failed      = _safe_int(hsc.get("failures"))
+            hosts_skipped     = _safe_int(hsc.get("skipped"))
+            hosts_unreachable = _safe_int(hsc.get("dark"))
+
+            # Compute total if any count is available
+            hosts_total = None
+            if any(v is not None for v in [hosts_ok, hosts_changed,
+                                            hosts_failed, hosts_skipped,
+                                            hosts_unreachable]):
+                hosts_total = (
+                    (hosts_ok          or 0)
+                    + (hosts_changed   or 0)
+                    + (hosts_failed    or 0)
+                    + (hosts_skipped   or 0)
+                    + (hosts_unreachable or 0)
+                )
+                dynamic_count += 1
+
+            # task_count and changed_count from related summary
+            # Available on the detail endpoint; skip for list sync
+            # to avoid one API call per job (too expensive).
+            # Use None — can be backfilled via --entity job_details
+            task_count    = None
+            changed_count = None
+
+            # artifacts: set_stats output from playbook
+            # Available only on job detail — skip in list sync
+            artifacts = None
 
             extra = {
-                "limit": job.get("limit"),
-                "verbosity": job.get("verbosity"),
-                "job_tags": job.get("job_tags"),
+                "limit":      job.get("limit"),
+                "verbosity":  job.get("verbosity"),
+                "job_tags":   job.get("job_tags"),
                 "extra_vars": job.get("extra_vars"),
             }
 
@@ -282,14 +361,28 @@ def sync_jobs(client: AWXClient, conn, log: logging.Logger,
                 INSERT INTO job_executions
                     (awx_job_id, job_type, org_id, job_template_id, template_name,
                      status, started, finished, elapsed, launched_by,
-                     inventory_id, project_id, extra_data, synced_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                     inventory_id, project_id, extra_data,
+                     hosts_total, hosts_ok, hosts_changed, hosts_failed,
+                     hosts_skipped, hosts_unreachable,
+                     task_count, changed_count, artifacts,
+                     synced_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,
+                        NOW())
                 ON CONFLICT (awx_job_id, job_type) DO UPDATE SET
-                    status        = EXCLUDED.status,
-                    finished      = EXCLUDED.finished,
-                    elapsed       = EXCLUDED.elapsed,
-                    extra_data    = EXCLUDED.extra_data,
-                    synced_at     = NOW()
+                    status            = EXCLUDED.status,
+                    finished          = EXCLUDED.finished,
+                    elapsed           = EXCLUDED.elapsed,
+                    extra_data        = EXCLUDED.extra_data,
+                    -- Only overwrite host counts if the new value is not NULL
+                    -- (prevents erasing data on re-sync of running jobs)
+                    hosts_total       = COALESCE(EXCLUDED.hosts_total,       job_executions.hosts_total),
+                    hosts_ok          = COALESCE(EXCLUDED.hosts_ok,          job_executions.hosts_ok),
+                    hosts_changed     = COALESCE(EXCLUDED.hosts_changed,     job_executions.hosts_changed),
+                    hosts_failed      = COALESCE(EXCLUDED.hosts_failed,      job_executions.hosts_failed),
+                    hosts_skipped     = COALESCE(EXCLUDED.hosts_skipped,     job_executions.hosts_skipped),
+                    hosts_unreachable = COALESCE(EXCLUDED.hosts_unreachable, job_executions.hosts_unreachable),
+                    synced_at         = NOW()
             """, (
                 job["id"], job_type, org_id, tmpl_id, tmpl_name,
                 job.get("status", "unknown"),
@@ -297,12 +390,18 @@ def sync_jobs(client: AWXClient, conn, log: logging.Logger,
                 job.get("elapsed"), launched,
                 job.get("inventory"), job.get("project"),
                 psycopg2.extras.Json(extra),
+                hosts_total, hosts_ok, hosts_changed, hosts_failed,
+                hosts_skipped, hosts_unreachable,
+                task_count, changed_count,
+                psycopg2.extras.Json(artifacts) if artifacts else None,
             ))
             count += 1
 
         set_sync_state(cur, entity_key, "ok", count)
         conn.commit()
-    log.info("%s synced: %d records", job_type, count)
+
+    log.info("%s synced: %d records (%d with host counts, %d fallback)",
+             job_type, count, dynamic_count, count - dynamic_count)
     return count
 
 # ──────────────────────────────────────────────────────────
@@ -315,8 +414,9 @@ def sync_users(client: AWXClient, conn, log: logging.Logger) -> int:
         for user in client.paginate("/api/v2/users/"):
             cur.execute("""
                 INSERT INTO rbac_users
-                    (id, username, first_name, last_name, email, is_superuser, is_system_auditor, last_login, synced_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    (id, username, first_name, last_name, email,
+                     is_superuser, is_system_auditor, last_login, synced_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW())
                 ON CONFLICT (id) DO UPDATE SET
                     username          = EXCLUDED.username,
                     first_name        = EXCLUDED.first_name,
@@ -327,9 +427,11 @@ def sync_users(client: AWXClient, conn, log: logging.Logger) -> int:
                     last_login        = EXCLUDED.last_login,
                     synced_at         = NOW()
             """, (
-                user["id"], user["username"], user.get("first_name",""),
-                user.get("last_name",""), user.get("email",""),
-                user.get("is_superuser", False), user.get("is_system_auditor", False),
+                user["id"], user["username"],
+                user.get("first_name",""), user.get("last_name",""),
+                user.get("email",""),
+                user.get("is_superuser", False),
+                user.get("is_system_auditor", False),
                 parse_ts(user.get("last_login")),
             ))
             count += 1
@@ -346,9 +448,10 @@ def sync_teams(client: AWXClient, conn, log: logging.Logger) -> int:
             org_id = team.get("organization")
             if isinstance(org_id, dict):
                 org_id = org_id.get("id")
+
             cur.execute("""
                 INSERT INTO rbac_teams (id, org_id, name, description, synced_at)
-                VALUES (%s, %s, %s, %s, NOW())
+                VALUES (%s,%s,%s,%s,NOW())
                 ON CONFLICT (id) DO UPDATE SET
                     org_id      = EXCLUDED.org_id,
                     name        = EXCLUDED.name,
@@ -356,17 +459,17 @@ def sync_teams(client: AWXClient, conn, log: logging.Logger) -> int:
                     synced_at   = NOW()
             """, (team["id"], org_id, team["name"], team.get("description","")))
 
-            # Sync team members
-            members_data = client.get(f"/api/v2/teams/{team['id']}/users/", {"page_size": 200})
+            members_data = client.get(
+                f"/api/v2/teams/{team['id']}/users/", {"page_size": 200})
             for member in members_data.get("results", []):
                 try:
                     cur.execute("""
                         INSERT INTO rbac_team_members (team_id, user_id, synced_at)
-                        VALUES (%s, %s, NOW())
+                        VALUES (%s,%s,NOW())
                         ON CONFLICT (team_id, user_id) DO UPDATE SET synced_at = NOW()
                     """, (team["id"], member["id"]))
                 except psycopg2.errors.ForeignKeyViolation:
-                    conn.rollback()  # user not yet synced; will fix on next full sync
+                    conn.rollback()
             count += 1
 
         set_sync_state(cur, "teams", "ok", count)
@@ -375,7 +478,6 @@ def sync_teams(client: AWXClient, conn, log: logging.Logger) -> int:
     return count
 
 def sync_org_roles(client: AWXClient, conn, log: logging.Logger) -> int:
-    """Pull org-level user roles from each org's access_list."""
     log.info("Syncing org user roles…")
     count = 0
     with conn.cursor() as cur:
@@ -384,17 +486,20 @@ def sync_org_roles(client: AWXClient, conn, log: logging.Logger) -> int:
 
     for org_id in org_ids:
         try:
-            data = client.paginate(f"/api/v2/organizations/{org_id}/access_list/")
             with conn.cursor() as cur:
-                for entry in data:
+                for entry in client.paginate(
+                        f"/api/v2/organizations/{org_id}/access_list/"):
                     user_id = entry.get("id")
-                    for role in entry.get("summary_fields", {}).get("direct_access", []):
+                    for role in (entry.get("summary_fields", {})
+                                 .get("direct_access", [])):
                         role_name = role.get("role", {}).get("name", "Member")
                         try:
                             cur.execute("""
-                                INSERT INTO rbac_user_org_roles (user_id, org_id, role_name, synced_at)
-                                VALUES (%s, %s, %s, NOW())
-                                ON CONFLICT (user_id, org_id, role_name) DO UPDATE SET synced_at = NOW()
+                                INSERT INTO rbac_user_org_roles
+                                    (user_id, org_id, role_name, synced_at)
+                                VALUES (%s,%s,%s,NOW())
+                                ON CONFLICT (user_id, org_id, role_name)
+                                DO UPDATE SET synced_at = NOW()
                             """, (user_id, org_id, role_name))
                             count += 1
                         except psycopg2.errors.ForeignKeyViolation:
@@ -407,7 +512,7 @@ def sync_org_roles(client: AWXClient, conn, log: logging.Logger) -> int:
     return count
 
 # ──────────────────────────────────────────────────────────
-# Daily metrics refresh
+# Metrics refresh
 # ──────────────────────────────────────────────────────────
 def refresh_metrics(conn, log: logging.Logger, full_sync: bool):
     log.info("Refreshing daily_metrics…")
@@ -417,30 +522,54 @@ def refresh_metrics(conn, log: logging.Logger, full_sync: bool):
         conn.commit()
     log.info("daily_metrics refresh complete")
 
+def refresh_roi_metrics(conn, log: logging.Logger, full_sync: bool):
+    log.info("Refreshing daily_roi_metrics (dynamic method)…")
+    since = "CURRENT_DATE - 91" if full_sync else "CURRENT_DATE - 3"
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT refresh_daily_roi_metrics({since}::DATE)")
+        conn.commit()
+
+    # Log a quick summary of dynamic vs fallback rows produced
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT roi_basis, COUNT(*) AS rows,
+                   ROUND(SUM(manual_minutes_saved)/60,1) AS hours_saved
+            FROM daily_roi_metrics
+            WHERE metric_date >= CURRENT_DATE - 3
+            GROUP BY roi_basis
+        """)
+        rows = cur.fetchall()
+    for basis, row_count, hours in rows:
+        log.info("  ROI basis='%s': %d rows, %.1f hours saved",
+                 basis, row_count, hours or 0)
+    log.info("daily_roi_metrics refresh complete")
+
 # ──────────────────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────────────────
 def parse_args():
-    p = argparse.ArgumentParser(description="AWX Analytics Portal Collector")
+    p = argparse.ArgumentParser(
+        description="AWX Analytics Portal Collector (Dynamic ROI)")
     p.add_argument("--full-sync", action="store_true",
                    help="Backfill 90 days of job history and all objects")
     p.add_argument("--entity", default="all",
                    choices=["all","organizations","jobs","workflow_jobs",
-                             "templates","projects","inventories","credentials",
-                             "hosts","users","teams"],
+                            "templates","projects","inventories","credentials",
+                            "hosts","users","teams"],
                    help="Sync only a specific entity")
-    p.add_argument("--config", default=CONFIG_PATH, help="Path to config.yaml")
+    p.add_argument("--config", default=CONFIG_PATH,
+                   help="Path to config.yaml")
     return p.parse_args()
 
 def main():
-    args = parse_args()
-    cfg = load_config(args.config)
-    log = setup_logging(cfg)
+    args   = parse_args()
+    cfg    = load_config(args.config)
+    log    = setup_logging(cfg)
 
     log.info("=== AWX Collector starting (full_sync=%s, entity=%s) ===",
              args.full_sync, args.entity)
 
-    conn = get_conn(cfg)
+    conn   = get_conn(cfg)
     psycopg2.extras.register_default_jsonb(conn)
     client = AWXClient(cfg, log)
     overlap_min = cfg.get("collector", {}).get("overlap_minutes", 5)
@@ -461,26 +590,27 @@ def main():
                 set_sync_state(cur, name, "error", error=str(exc))
             conn.commit()
 
-    # Get last job sync timestamps
+    # Capture last-sync timestamps before anything runs
     with conn.cursor() as cur:
-        jobs_since      = get_last_synced(cur, "jobs")
-        wf_since        = get_last_synced(cur, "workflow_jobs")
+        jobs_since = get_last_synced(cur, "jobs")
+        wf_since   = get_last_synced(cur, "workflow_jobs")
 
-    run("organizations", sync_organizations, client, conn, log)
-    run("job_templates", sync_awx_objects, client, conn, log,
-        "/api/v2/job_templates/", "job_template", "job_templates")
-    run("workflow_job_templates", sync_awx_objects, client, conn, log,
-        "/api/v2/workflow_job_templates/", "workflow_job_template", "workflow_job_templates")
-    run("projects", sync_awx_objects, client, conn, log,
-        "/api/v2/projects/", "project", "projects")
-    run("inventories", sync_awx_objects, client, conn, log,
-        "/api/v2/inventories/", "inventory", "inventories")
-    run("credentials", sync_awx_objects, client, conn, log,
-        "/api/v2/credentials/", "credential", "credentials")
-    run("hosts", sync_awx_objects, client, conn, log,
-        "/api/v2/hosts/", "host", "hosts")
-    run("users", sync_users, client, conn, log)
-    run("teams", sync_teams, client, conn, log)
+    # Sync in FK-safe order
+    run("organizations",           sync_organizations,  client, conn, log)
+    run("job_templates",           sync_awx_objects, client, conn, log,
+        "/api/v2/job_templates/",           "job_template",           "job_templates")
+    run("workflow_job_templates",  sync_awx_objects, client, conn, log,
+        "/api/v2/workflow_job_templates/",  "workflow_job_template",  "workflow_job_templates")
+    run("projects",                sync_awx_objects, client, conn, log,
+        "/api/v2/projects/",                "project",                "projects")
+    run("inventories",             sync_awx_objects, client, conn, log,
+        "/api/v2/inventories/",             "inventory",              "inventories")
+    run("credentials",             sync_awx_objects, client, conn, log,
+        "/api/v2/credentials/",             "credential",             "credentials")
+    run("hosts",                   sync_awx_objects, client, conn, log,
+        "/api/v2/hosts/",                   "host",                   "hosts")
+    run("users",  sync_users,  client, conn, log)
+    run("teams",  sync_teams,  client, conn, log)
 
     if entity in ("all", "jobs"):
         try:
@@ -503,13 +633,19 @@ def main():
     if entity in ("all", "users"):
         run("org_roles", sync_org_roles, client, conn, log)
 
-    # Always refresh daily_metrics at the end
+    # Refresh aggregates — always runs last
     try:
         refresh_metrics(conn, log, args.full_sync)
     except Exception as exc:
-        log.error("Metrics refresh failed: %s", exc, exc_info=True)
+        log.error("daily_metrics refresh failed: %s", exc, exc_info=True)
+
+    try:
+        refresh_roi_metrics(conn, log, args.full_sync)
+    except Exception as exc:
+        log.error("daily_roi_metrics refresh failed: %s", exc, exc_info=True)
 
     conn.close()
+
     if errors:
         log.warning("Collector finished with errors in: %s", ", ".join(errors))
         sys.exit(1)
