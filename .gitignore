@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv*/
+.env
+.venv
+
+# Config with secrets — copy config/config.yaml to set up, never commit credentials
+config/config.local.yaml
+
+# Logs
+*.log
+/var/log/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (design guide build only)
+node_modules/

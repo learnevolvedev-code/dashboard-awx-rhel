@@ -1,288 +1,163 @@
 # AWX Analytics Portal
 
-> **A stakeholder-facing analytics dashboard for Ansible AWX / Tower deployments.**
-> Syncs automation data from AWX every 5 minutes and surfaces org-level KPIs, job trend charts, template drill-downs, and RBAC visibility — all from a single RHEL server with no cloud dependencies.
+> **Stakeholder-facing analytics, ROI metrics, and export-ready reports for Ansible AWX / Tower — deployed on a single RHEL 8/9 server.**
 
 [![Platform](https://img.shields.io/badge/platform-RHEL%208%20%2F%209-EE0000?style=flat-square&logo=redhat)](https://www.redhat.com/)
 [![Python](https://img.shields.io/badge/python-3.9%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.111%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.111%2B-009688?style=flat-square&logo=fastapi)](https://fastapi.tiangolo.com/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-336791?style=flat-square&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
 ---
 
-## Table of Contents
+## What it does
 
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [How It Works](#how-it-works)
-  - [Background Sync Loop](#1-background-sync-loop-every-5-minutes)
-  - [Live Request Path](#2-live-request-path-when-you-open-the-dashboard)
-  - [Incremental vs Full Sync](#3-incremental-vs-full-sync)
-- [Project Structure](#project-structure)
-- [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
-- [Configuration](#configuration)
-- [Database Schema](#database-schema)
-- [API Reference](#api-reference)
-- [Frontend Dashboard](#frontend-dashboard)
-- [Security](#security)
-- [Operational Runbook](#operational-runbook)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
+The AWX Analytics Portal syncs data from your AWX cluster every 5 minutes and surfaces it in a clean, role-scoped dashboard. Stakeholders see only what they're permitted to see — based on their existing Active Directory group memberships via AWX SSO.
 
----
-
-## Overview
-
-The AWX Analytics Portal bridges the gap between AWX's technical job view and the business-level visibility stakeholders need. It answers questions like:
-
-- **"Which org has the lowest success rate this month?"**
-- **"What's our global job trend over the last quarter?"**
-- **"Who has admin access to the Platform Engineering org?"**
-- **"Which job template is causing the most failures?"**
-
-It is deployed entirely on a **single RHEL 8/9 server** — no Kubernetes, no additional cloud services, no build pipeline needed.
-
-```
-AWX (EKS)  ──►  Collector (Python)  ──►  PostgreSQL 15  ──►  FastAPI  ──►  Nginx  ──►  Browser
-               runs every 5 min           local on RHEL        4 workers    port 80     React 18
-```
-
-### Key Design Decisions
-
-| Decision | Rationale |
+| Feature | Detail |
 |---|---|
-| **Incremental sync** | Only fetches new/changed jobs per run. Scales to large AWX instances without hammering the API. |
-| **Pre-aggregated `daily_metrics`** | A background function pre-counts per-day × per-org × per-template rows after every sync. Dashboard queries read these summaries — not raw job rows — so charts load instantly. |
-| **Single `index.html` frontend** | No Node.js, no webpack, no build step on the server. React 18 + Recharts via CDN. Drop it in a folder and it works. |
-| **Demo mode** | Set `useMockData: true` in the frontend config to render fully realistic charts without any live data. Use for stakeholder sign-off before deployment. |
-| **Relative API base** | The frontend uses `/api` (not `https://server/api`). Nginx routes transparently, eliminating CORS issues and hardcoded hostnames. |
+| **Job KPIs** | Success rates, failure counts, duration trends — per org and global |
+| **Template drill-down** | Per-template metrics inside every org |
+| **AWX Objects browser** | Inventories, projects, credentials, templates — searchable and filterable |
+| **RBAC visibility** | Who has what role in which org, with team membership |
+| **ROI & Impact metrics** | Hours saved, cost avoided, and efficiency ratios per automation |
+| **CSV exports** | Every view downloadable — per-org reports, ROI rankings, full org reports |
+| **AD/SSO auth** | Login via AWX OAuth2 — inherits your existing AD group → AWX role mapping |
+| **Org-scoped access** | Viewers see only their org; developers can configure ROI; admins see everything |
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              RHEL 8/9 SERVER                                   │
-│                                                                                 │
-│   ┌──────────────┐    ┌──────────────┐    ┌──────────────────────────────┐     │
-│   │   systemd    │    │  Collector   │    │       PostgreSQL 15           │     │
-│   │    Timer     │───▶│ collector.py │───▶│  organizations               │     │
-│   │  (5 min)     │    │              │    │  awx_objects                 │     │
-│   └──────────────┘    └──────────────┘    │  job_executions              │     │
-│                              │            │  daily_metrics  ◄── rollup   │     │
-│                              │ HTTPS      │  rbac_users/teams            │     │
-│                              ▼            │  sync_state                  │     │
-│                    ┌─────────────────┐    └──────────────┬───────────────┘     │
-│                    │   AWX API (EKS) │                   │                     │
-│                    │  Bearer token   │                   │ pool                │
-│                    └─────────────────┘    ┌──────────────▼───────────────┐     │
-│                                           │  FastAPI + Gunicorn           │     │
-│   ┌──────────────┐                        │  4 × UvicornWorker            │     │
-│   │    Nginx     │◄──────────────────────▶│  127.0.0.1:8000               │     │
-│   │   port 80    │    /api/* proxied      │  /api/summary /api/trend      │     │
-│   │  (+ 443 TLS) │                        │  /api/orgs/*  /api/jobs       │     │
-│   └──────┬───────┘                        │  /api/orgs/*/rbac             │     │
-│          │ static                         └──────────────────────────────┘     │
-│          ▼                                                                      │
-│   /opt/awx-portal/                                                              │
-│   frontend/index.html                                                           │
-│   (React 18 SPA)                                                                │
-└─────────────────────────────────────────────────────────────────────────────────┘
-                   │
-                   │  HTTP/HTTPS
-                   ▼
-           ┌──────────────┐
-           │   Browser    │
-           │  (React app) │
-           └──────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                          RHEL 8/9 SERVER                             │
+│                                                                      │
+│  ┌─────────────┐    ┌──────────────────┐    ┌──────────────────────┐ │
+│  │ systemd     │    │  collector.py    │    │   PostgreSQL 15      │ │
+│  │ timer 5min  │───▶│  (Python venv)   │───▶│  organizations       │ │
+│  └─────────────┘    └──────────────────┘    │  job_executions      │ │
+│                            │ HTTPS          │  daily_metrics ◀─┐   │ │
+│                            ▼                │  awx_objects     │   │ │
+│                     ┌──────────────┐        │  rbac_*          │   │ │
+│                     │  AWX API     │        │  portal_sessions │   │ │
+│                     │  (EKS/any)   │        │  template_roi_*  │   │ │
+│                     └──────────────┘        │  daily_roi_*     │   │ │
+│                                             └──────────┬───────┘   │ │
+│                                                        │ pool       │ │
+│  ┌─────────────┐    /api/* proxied    ┌───────────────▼──────────┐ │ │
+│  │   Nginx     │◀───────────────────▶│  FastAPI + Gunicorn      │ │ │
+│  │  port 80    │                      │  4 × UvicornWorker       │ │ │
+│  │  (+ 443)    │    / static SPA      │  127.0.0.1:8000          │ │ │
+│  └──────┬──────┘                      └──────────────────────────┘ │ │
+│         │                                                            │ │
+│  /opt/awx-portal/frontend/index.html  (React 18, no build step)     │ │
+└──────────────────────────────────────────────────────────────────────┘
+                  │ HTTP / HTTPS
+                  ▼
+           ┌─────────────┐
+           │   Browser   │
+           └─────────────┘
 ```
 
-### Component Roles
-
-| Component | Technology | Path | Description |
-|---|---|---|---|
-| **Timer** | systemd | `systemd/awx-collector.timer` | Wakes up every 5 minutes, triggers the collector service |
-| **Collector** | Python 3 | `collector/collector.py` | Fetches AWX API data, upserts into PostgreSQL |
-| **PostgreSQL** | PostgreSQL 15 | `schema.sql` | Local RDBMS — stores all synced data + pre-aggregated metrics |
-| **FastAPI** | Python 3 / ASGI | `api/` | JSON API with 4 Gunicorn UvicornWorker processes |
-| **Nginx** | Nginx | `nginx/awx-portal.conf` | Reverse proxy for `/api/*`, serves SPA for everything else |
-| **Frontend** | React 18 | `frontend/index.html` | Single-file dashboard, no build step required |
+**Two independent data paths:**
+- **Background sync** — systemd timer → `collector.py` → PostgreSQL → `refresh_daily_metrics()` (every 5 min)
+- **Live request** — Browser → Nginx → FastAPI → reads `daily_metrics` pre-aggregates → JSON → Recharts
 
 ---
 
-## How It Works
-
-### 1. Background Sync Loop (every 5 minutes)
-
-```
-systemd timer fires
-       │
-       ▼
-collector.py starts
-       │
-       ├── reads sync_state table  ←── "when did I last sync jobs?"
-       │
-       ├── calls AWX /api/v2/jobs/?finished__gt=<last_sync - 5min>
-       │         paginated via `next` field, page_size=200
-       │
-       ├── UPSERT into job_executions  ←── new/updated jobs only
-       ├── UPSERT organizations, users, teams, templates, etc.
-       │
-       ├── updates sync_state.last_synced_at
-       │
-       └── calls refresh_daily_metrics()
-                 └── recomputes daily_metrics for last ~3 days
-                       (per-day × per-org × per-template aggregates)
-```
-
-The **5-minute overlap window** (`finished__gt = last_sync - 5min`) guards against clock skew between the AWX cluster and the local server. A job finished just before the last sync might not have been committed in AWX yet — the overlap ensures it's caught on the next pass.
-
-### 2. Live Request Path (when you open the dashboard)
-
-```
-Browser opens http://<server>/
-       │
-       ▼
-Nginx serves frontend/index.html  ──► React 18 app boots in browser
-                                              │
-                                    fetches /api/summary
-                                    fetches /api/trend?period=month
-                                              │
-                                              ▼
-                                        Nginx proxies /api/* to Gunicorn :8000
-                                              │
-                                              ▼
-                                        FastAPI reads from daily_metrics
-                                        (pre-aggregated — fast!)
-                                              │
-                                              ▼
-                                        JSON response  ──►  Recharts renders charts
-```
-
-Because the API reads from pre-aggregated `daily_metrics` rows (not raw `job_executions`), queries are fast regardless of how many total jobs exist in the database.
-
-### 3. Incremental vs Full Sync
-
-```
-                    ┌─────────────────────────────┐
-                    │  Is --full-sync flag set?    │
-                    └─────────────┬───────────────┘
-                         YES      │      NO
-              ┌──────────────────┘└──────────────────┐
-              ▼                                       ▼
-   Fetch 90 days of job history          Read sync_state.last_synced_at
-   No time filter on API calls           Use finished__gt=<cutoff - 5min>
-   Refresh daily_metrics from            Only new/changed records fetched
-   90 days ago                           Refresh daily_metrics for 3 days
-              │                                       │
-              └──────────────┬────────────────────────┘
-                             ▼
-                    UPSERT all records
-                    Update sync_state
-```
-
-| Mode | When to use | Command |
-|---|---|---|
-| **Incremental** | Every 5-min scheduled run | *(automatic via timer)* |
-| **Full sync** | Initial setup, after extended downtime, schema migration | `python collector.py --full-sync` |
-| **Single entity** | Debugging one data type | `python collector.py --entity jobs` |
-
----
-
-## Project Structure
+## Repository Structure
 
 ```
 awx-portal-rhel/
-│
-├── README.md                           ← You are here
-├── AWX_Portal_RHEL_Architecture.docx   ← Full architecture design document
-├── install.sh                          ← Automated RHEL installer (run as root)
-├── schema.sql                          ← PostgreSQL 15 schema (tables, views, functions)
+├── README.md                        ← This file
+├── install.sh                       ← Automated RHEL installer (run as root)
+├── schema.sql                       ← Base PostgreSQL 15 schema
+├── schema_v2.sql                    ← Enhancement schema: auth + ROI tables
 │
 ├── config/
-│   └── config.yaml                     ← Central config: AWX token, DB creds, tuning
+│   └── config.yaml                  ← Central configuration (AWX token, DB, auth, ROI)
 │
 ├── collector/
-│   ├── collector.py                    ← AWX API → PostgreSQL sync script (520 lines)
-│   └── requirements.txt                ← requests, psycopg2-binary, PyYAML, dateutil
+│   ├── collector.py                 ← AWX → PostgreSQL sync (520 lines)
+│   └── requirements.txt
 │
 ├── api/
-│   ├── main.py                         ← FastAPI app: lifespan, CORS, router registration
-│   ├── database.py                     ← ThreadedConnectionPool + fetch helpers
 │   ├── __init__.py
+│   ├── main.py                      ← FastAPI app, CORS, router registration
+│   ├── database.py                  ← Connection pool + fetch helpers
+│   ├── auth.py                      ← AWX OAuth2 flow, session management, RBAC
+│   ├── requirements.txt
 │   └── routers/
-│       ├── summary.py                  ← GET /api/summary, /api/trend, /api/sync
-│       ├── orgs.py                     ← GET /api/orgs/*, /api/orgs/{id}/templates/*
-│       ├── jobs.py                     ← GET /api/jobs (paginated, filterable)
-│       └── rbac.py                     ← GET /api/orgs/{id}/rbac, /api/rbac/users
-│   └── requirements.txt                ← fastapi, uvicorn, gunicorn, psycopg2, PyYAML
-│
-├── nginx/
-│   └── awx-portal.conf                 ← Nginx: proxy + SPA serving + security headers
-│
-├── systemd/
-│   ├── awx-portal-api.service          ← Gunicorn service (4 UvicornWorkers, port 8000)
-│   ├── awx-collector.service           ← Oneshot collector service
-│   └── awx-collector.timer             ← Fires collector every 5 minutes
+│       ├── __init__.py
+│       ├── summary.py               ← GET /api/summary, /api/trend, /api/sync
+│       ├── orgs.py                  ← GET /api/orgs/* (auth-scoped)
+│       ├── jobs.py                  ← GET /api/jobs (paginated, filterable)
+│       ├── rbac.py                  ← GET /api/rbac/* and /api/orgs/{id}/rbac
+│       ├── roi.py                   ← GET+POST+PUT+DELETE /api/roi/*
+│       └── export.py                ← GET /api/export/* (CSV downloads)
 │
 ├── frontend/
-│   └── index.html                      ← React 18 + Recharts SPA (836 lines, no build)
+│   └── index.html                   ← React 18 SPA — entire UI, no build step (839 lines)
+│
+├── nginx/
+│   └── awx-portal.conf              ← Reverse proxy + SPA serving + security headers
+│
+├── systemd/
+│   ├── awx-portal-api.service       ← Gunicorn service
+│   ├── awx-collector.service        ← One-shot sync service
+│   └── awx-collector.timer          ← 5-minute timer
 │
 └── docs/
-    └── architecture.html               ← Interactive SVG architecture diagram
+    └── architecture.html            ← Interactive SVG architecture diagram
 ```
 
 ---
 
 ## Prerequisites
 
-### On the RHEL 8/9 Server
-
-| Requirement | Version | Notes |
-|---|---|---|
-| RHEL / Rocky / AlmaLinux | 8 or 9 | Must be x86_64 |
-| Python | 3.9+ | Available via `dnf` |
-| Root access | — | Installer configures PostgreSQL, systemd, SELinux |
-| Outbound HTTPS | port 443 | To reach your AWX instance |
-| Inbound HTTP | port 80 | For dashboard access (443 for TLS) |
-
-> **PostgreSQL 15** is installed automatically from the official PGDG repository. You do not need to install it manually.
-
-### From AWX / Tower
+### RHEL Server
 
 | Requirement | Notes |
 |---|---|
-| AWX 21+ or Ansible Tower 3.8+ | Tested against AWX 23/24 on EKS |
-| Read-only API token | Create in AWX: **Users → Your User → Tokens → Add** |
-| Network connectivity | RHEL server must reach `https://<awx-fqdn>` on port 443 |
+| RHEL 8 or 9 (or Rocky / AlmaLinux) | x86_64, root access for install |
+| Python 3.9+ | Available via `dnf` |
+| Outbound HTTPS (port 443) | To reach your AWX instance |
+| Inbound HTTP/HTTPS (ports 80/443) | For browser access |
+
+PostgreSQL 15 is installed automatically from the PGDG repo. You do not need to install it manually.
+
+### From AWX / Ansible Tower
+
+| Requirement | Notes |
+|---|---|
+| AWX 21+ or Ansible Tower 3.8+ | API-compatible |
+| Read-only API token | AWX → Users → Your User → Tokens → Add |
+| Network reachability | RHEL server must reach `https://<awx-fqdn>` on port 443 |
 
 ---
 
 ## Quick Start
 
-### 1. Clone the repository
+### 1. Clone
 
 ```bash
 git clone https://github.com/your-org/awx-portal-rhel.git
 cd awx-portal-rhel
 ```
 
-### 2. Configure AWX credentials
+### 2. Set your AWX credentials
 
 ```bash
 vi config/config.yaml
 ```
 
-Set at minimum:
-
+Minimum required:
 ```yaml
 awx:
-  base_url: "https://awx.your-company.com"   # your AWX FQDN
-  token: "your-read-only-awx-api-token"       # AWX API token
+  base_url: "https://awx.your-company.com"
+  token: "your-read-only-awx-api-token"
 ```
 
 ### 3. Run the installer
@@ -291,16 +166,16 @@ awx:
 sudo bash install.sh
 ```
 
-The installer will:
-- Install PostgreSQL 15 from PGDG repo
-- Create the `awxportal` system user and database
-- Apply `schema.sql`
-- Create Python virtual environments (`venv-collector`, `venv-api`)
-- Install systemd units and enable them
-- Configure Nginx with the SPA proxy
-- Set SELinux boolean `httpd_can_network_connect=1`
-- Open ports 80/443 in firewalld
-- Run an initial full sync (if token is configured)
+The installer:
+- Installs PostgreSQL 15 from PGDG
+- Creates `awxportal` system user and database
+- Applies `schema.sql` and `schema_v2.sql`
+- Creates Python virtualenvs and installs dependencies
+- Installs and enables systemd units
+- Configures Nginx
+- Sets SELinux boolean `httpd_can_network_connect=1`
+- Opens ports 80/443 in firewalld
+- Runs an initial full sync
 
 ### 4. Open the dashboard
 
@@ -308,23 +183,22 @@ The installer will:
 http://<your-server-ip>/
 ```
 
-The Swagger API docs are available at:
-
+Swagger API docs:
 ```
 http://<your-server-ip>/api/docs
 ```
 
 ---
 
-## Configuration
+## Configuration Reference
 
-All configuration lives in `/opt/awx-portal/config/config.yaml` (mode `640`, owner `root:awxportal`).
+**File:** `/opt/awx-portal/config/config.yaml` (mode `640`, owner `root:awxportal`)
 
 ```yaml
 awx:
   base_url: "https://awx.example.com"     # AWX FQDN — no trailing slash
   token: "REPLACE_ME"                      # Read-only AWX API token
-  verify_ssl: true                         # Set false for self-signed certs (dev only)
+  verify_ssl: true                         # false for self-signed certs (dev only)
   page_size: 200                           # Items per paginated request (AWX max: 200)
   request_timeout: 30                      # HTTP timeout in seconds
   max_retries: 3                           # Retry count on transient errors
@@ -340,473 +214,459 @@ database:
   pool_max: 10
 
 collector:
-  overlap_minutes: 5        # Extra lookback window to handle clock skew
+  overlap_minutes: 5        # Extra lookback on each incremental sync (clock skew guard)
   full_sync_days: 90        # Backfill window for --full-sync
   log_level: "INFO"
 
 api:
   host: "127.0.0.1"
   port: 8000
-  workers: 4                # Gunicorn UvicornWorker count
+  workers: 4
   cors_origins:
     - "https://awx-portal.your-company.com"
 
 portal:
-  demo_mode: false          # true = mock data, no DB required
+  demo_mode: false          # true = mock data, no DB required (for UI preview)
   org_name: "My Enterprise"
+
+# AWX OAuth2 authentication (disabled by default — see Auth Setup below)
+auth:
+  enabled: false
+  client_id: "REPLACE_ME"
+  client_secret: "REPLACE_ME"
+  redirect_uri: "https://awx-portal.your-company.com/api/auth/callback"
+  cookie_secure: true
+  session_ttl_hours: 8
+
+# ROI / Impact metrics defaults
+roi:
+  default_hourly_rate: 75.00
+  default_failure_cost_minutes: 30
+  categories:
+    - patching
+    - deployment
+    - compliance
+    - backup
+    - monitoring
+    - security
+    - provisioning
+    - decommission
+    - general
 ```
 
-After editing `config.yaml`, restart the API:
+After editing config, restart the API:
+```bash
+systemctl restart awx-portal-api
+```
+
+---
+
+## Authentication Setup (AD / SSO via AWX OAuth2)
+
+The portal authenticates **through AWX** — your users log in with their existing AWX credentials (which are already backed by your Active Directory via AWX's LDAP/SAML integration). No second AD connection is needed.
+
+### How it works
+
+```
+User clicks Sign In
+    → /api/auth/login → redirected to AWX /o/authorize/
+    → AWX authenticates user against AD
+    → AWX redirects back → /api/auth/callback?code=...
+    → Portal exchanges code for AWX access token
+    → Portal reads /api/v2/users/{id}/roles/ to resolve org permissions
+    → Session cookie set (HttpOnly, SameSite=Lax)
+    → Every API call validates cookie against portal_sessions table
+```
+
+### AD Group → Portal Access Mapping
+
+| AD Group Pattern | AWX Role | Portal Level | Can Do |
+|---|---|---|---|
+| `<org>-automation-admins` | Admin / Project Admin | **admin** | View everything, manage ROI configs |
+| `<org>-automation-devs` | Execute / Member | **developer** | View everything, create/edit ROI configs |
+| `<org>-automation-viewers` | Read / Auditor | **viewer** | Read-only dashboard for their org |
+| AWX superuser | — | **admin** (global) | Unrestricted |
+
+### One-time AWX setup
+
+1. In AWX: **Administration → Applications → Add**
+   - Name: `AWX Analytics Portal`
+   - Authorization grant type: `Authorization code`
+   - Client type: `Confidential`
+   - Redirect URIs: `https://<portal-fqdn>/api/auth/callback`
+
+2. Copy the Client ID and Client Secret to `config/config.yaml`:
+```yaml
+auth:
+  enabled: true
+  client_id: "paste-client-id-here"
+  client_secret: "paste-client-secret-here"
+  redirect_uri: "https://awx-portal.your-company.com/api/auth/callback"
+  cookie_secure: true
+```
+
+3. Restart: `systemctl restart awx-portal-api`
+
+> **Note:** `auth.enabled: false` (the default) runs the portal in open mode — all API calls succeed without a login. Appropriate for internal-network-only deployments protected at the firewall.
+
+---
+
+## ROI & Impact Metrics Setup
+
+The ROI system multiplies actual execution counts against manually-configured time estimates to compute hours saved and cost avoided.
+
+### Formula
+
+```
+hours_saved      = successful_runs × manual_minutes_per_run ÷ 60
+cost_avoided     = hours_saved × engineer_hourly_rate
+failure_cost     = failed_runs × failure_cost_minutes ÷ 60 × engineer_hourly_rate
+net_value        = cost_avoided − failure_cost
+efficiency_ratio = manual_minutes_saved ÷ actual_automation_minutes
+                   (> 1.0 = automation is faster than manual)
+```
+
+### Step 1 — Apply the v2 schema
 
 ```bash
-sudo systemctl restart awx-portal-api
+PGPASSWORD=$(cat /root/.awx-portal-db-pass) \
+  psql -h 127.0.0.1 -U awxportal -d awxportal -f schema_v2.sql
 ```
+
+### Step 2 — Configure templates
+
+Via the dashboard (**ROI & Impact → Config tab → + Configure Template**), or via API:
+
+```bash
+curl -X POST http://localhost/api/roi/config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "org_id": 1,
+    "job_template_id": 42,
+    "template_name": "Patch RHEL Servers",
+    "manual_minutes_per_run": 120,
+    "engineer_hourly_rate": 85,
+    "category": "patching",
+    "complexity": "complex",
+    "failure_cost_minutes": 30
+  }'
+```
+
+### Step 3 — Backfill historical data
+
+```bash
+PGPASSWORD=$(cat /root/.awx-portal-db-pass) \
+  psql -h 127.0.0.1 -U awxportal -d awxportal \
+  -c "SELECT refresh_daily_roi_metrics(CURRENT_DATE - 90);"
+```
+
+After this the ROI & Impact page shows trend charts immediately. Going forward, ROI is automatically refreshed after every 5-minute sync.
 
 ---
 
-## Database Schema
+## Dashboard Pages
 
-### Tables
-
-```
-organizations           AWX orgs — id matches AWX org id
-awx_objects             Polymorphic: job_template, workflow_job_template,
-                        project, inventory, credential, host
-job_executions          One row per job/workflow_job run
-                        generated column: failed = status IN ('failed','error','canceled')
-daily_metrics           Pre-aggregated per day × org × template
-                        Rows with job_template_id IS NULL = org-level rollup sentinels
-rbac_teams              AWX teams
-rbac_users              AWX users (is_superuser, is_system_auditor flags)
-rbac_user_org_roles     User × org × role_name junction
-rbac_team_members       Team × user membership junction
-sync_state              Tracks last_synced_at + status per entity
-```
-
-### Views
-
-```sql
--- 30-day per-org rollup: totals, success rate, template/user counts
-SELECT * FROM v_org_summary;
-
--- Global daily trend across all orgs
-SELECT * FROM v_global_daily_trend WHERE metric_date >= CURRENT_DATE - 30;
-```
-
-### Maintenance
-
-```sql
--- Recompute daily_metrics from raw job_executions (last 91 days)
-SELECT refresh_daily_metrics();
-
--- Recompute for a specific window
-SELECT refresh_daily_metrics('2024-01-01'::DATE);
-```
-
-### Entity-Relationship Overview
-
-```
-organizations ◄──── awx_objects (job_templates, projects, inventories...)
-     │
-     ├──────────────► job_executions (one per job run)
-     │                       │
-     │                       └──► daily_metrics (pre-aggregated by day)
-     │
-     ├──────────────► rbac_user_org_roles ◄──── rbac_users
-     │
-     └──────────────► rbac_teams ◄──── rbac_team_members ◄──── rbac_users
-```
-
----
-
-## API Reference
-
-Base URL: `http://<server>/api`
-Interactive docs: `http://<server>/api/docs`
-
-All endpoints are **read-only GET**. No authentication required (protect at the network level).
-
-### Summary & Trend
-
-| Endpoint | Description |
+| Page | What It Shows |
 |---|---|
-| `GET /api/summary` | Global 30-day totals, org count, template count, per-org breakdown, sync state |
-| `GET /api/trend?period=month` | Daily trend rows. `period`: `day`, `week`, `month`, `quarter`, `year`. Optional `org_id` filter. |
-| `GET /api/sync` | sync_state table — last sync timestamp and status per entity |
-| `GET /api/health` | Health check → `{"status": "ok"}` |
-
-### Organizations
-
-| Endpoint | Description |
-|---|---|
-| `GET /api/orgs` | All orgs with summary metrics |
-| `GET /api/orgs/{id}` | Single org detail |
-| `GET /api/orgs/{id}/trend?period=month` | Org-scoped daily trend |
-| `GET /api/orgs/{id}/templates?period=month` | Templates with aggregated metrics |
-| `GET /api/orgs/{id}/templates/{tid}` | Template detail + daily trend |
-| `GET /api/orgs/{id}/objects` | All AWX objects for an org |
-
-### Jobs
-
-| Endpoint | Filters | Description |
-|---|---|---|
-| `GET /api/jobs` | `org_id`, `status`, `job_type`, `template_id`, `search`, `sort`, `page`, `page_size` | Paginated job list |
-| `GET /api/jobs/{id}` | — | Single job execution detail |
-
-**Sort options:** `finished_desc` *(default)*, `finished_asc`, `elapsed_desc`, `elapsed_asc`
-
-**Example:**
-```
-GET /api/jobs?org_id=3&status=failed&sort=elapsed_desc&page=1&page_size=25
-```
-
-### RBAC
-
-| Endpoint | Description |
-|---|---|
-| `GET /api/orgs/{id}/rbac` | Users + roles, teams, team members for an org |
-| `GET /api/rbac/users?search=john` | All users (optional search + `superuser_only` filter) |
-| `GET /api/rbac/teams` | All teams with org name and member count |
-
----
-
-## Frontend Dashboard
-
-The dashboard is a single `frontend/index.html` file — no Node.js, no `npm install`, no build step.
-
-### Pages
-
-| Page | What it shows |
-|---|---|
-| **Dashboard** | Global KPI cards, daily area chart, job outcomes pie chart, success rate line chart, org summary table |
+| **Dashboard** | Global KPI cards, ROI hero strip, job trend charts, org summary table |
 | **Organizations** | Card grid — click any org to drill down |
-| **Org Detail** | Three tabs: **Overview** (stacked bar chart), **Templates** (success rate per template), **RBAC** (users + teams) |
-| **Jobs** | Paginated, searchable, filterable job execution history |
-| **Sync Status** | Live sync_state table — when each entity was last synced |
-
-### Period Selector
-
-All charts support: **Day / Week / Month / Quarter / Year**. Selection is passed as `?period=` to the API.
+| **Org Detail** | Four tabs: Overview (trend chart), Templates, AWX Objects (inventories/projects/credentials/etc.), RBAC |
+| **AWX Objects** | All objects across all accessible orgs — type filter, org filter, text search |
+| **Jobs** | Paginated job execution history — filter by org, status, template name |
+| **ROI & Impact** | Four tabs: Overview charts, Templates ranked by net value, Categories, Config CRUD |
+| **Reports & Exports** | All CSV download buttons in one place — per org and global |
+| **Sync Status** | Last sync timestamp and record count per entity |
 
 ### Demo Mode
 
 To preview the dashboard without a live database:
 
-```html
-<!-- in frontend/index.html -->
+```javascript
+// In frontend/index.html, change:
 window.AWX_PORTAL_CONFIG = {
   useMockData: true,   // ← set this
-  apiBase: '/api',
-  orgName: 'My Enterprise',
+  ...
 };
 ```
 
-Or run it locally:
+Or serve locally:
 ```bash
 python3 -m http.server 8080 --directory frontend/
 # open http://localhost:8080
 ```
 
-### CDN Dependencies
+---
 
-| Library | Version | Purpose |
+## CSV Exports
+
+All exports are scoped to the logged-in user's accessible organisations. Every file is generated fresh on download.
+
+| Endpoint | File | Contents |
 |---|---|---|
-| React | 18 | UI component library |
-| ReactDOM | 18 | DOM rendering |
-| Recharts | 2.12.7 | Chart library (AreaChart, BarChart, LineChart, PieChart) |
-| Babel Standalone | latest | JSX transpilation in-browser |
-
-> **No external fonts or tracking scripts.** CSP headers restrict resource loading to `unpkg.com` and `cdnjs.cloudflare.com` only.
+| `/api/export/summary.csv` | `awx_portal_summary_<date>.csv` | All accessible orgs with 30d metrics |
+| `/api/export/org/{id}/trend.csv` | `<org>_trend_<period>_<date>.csv` | Daily job counts and success rates |
+| `/api/export/org/{id}/jobs.csv` | `<org>_jobs_<period>_<date>.csv` | Up to 5,000 job executions |
+| `/api/export/org/{id}/rbac.csv` | `<org>_rbac_<date>.csv` | Users, roles, org memberships |
+| `/api/export/org/{id}/objects.csv` | `<org>_objects_<date>.csv` | All AWX objects for the org |
+| `/api/export/report/{id}.csv` | `<org>_full_report_<date>.csv` | Combined: summary + trend + templates + RBAC + ROI |
+| `/api/export/roi/summary.csv` | `awx_roi_summary_<period>_<date>.csv` | ROI metrics per template |
+| `/api/export/roi/templates.csv` | `awx_roi_templates_<period>_<date>.csv` | Template rankings by net value |
 
 ---
 
-## Security
+## API Reference
 
-### Network Boundaries
+All endpoints respond with JSON. Interactive docs at `/api/docs`.
 
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| GET | `/api/health` | None | Health check |
+| GET | `/api/summary` | User (scoped) | Global KPIs + per-org breakdown |
+| GET | `/api/trend?period=` | User (scoped) | Daily trend rows |
+| GET | `/api/sync` | User | Sync state per entity |
+| GET | `/api/orgs` | User (scoped) | List permitted orgs |
+| GET | `/api/orgs/{id}` | User (scoped) | Org detail |
+| GET | `/api/orgs/{id}/trend` | User (scoped) | Org-scoped trend |
+| GET | `/api/orgs/{id}/templates` | User (scoped) | Templates with metrics |
+| GET | `/api/orgs/{id}/objects` | User (scoped) | AWX objects for org |
+| GET | `/api/orgs/{id}/rbac` | User (scoped) | Users + teams for org |
+| GET | `/api/jobs` | User (scoped) | Paginated job list |
+| GET | `/api/rbac/users` | User | All users |
+| GET | `/api/rbac/teams` | User | All teams |
+| GET | `/api/roi/summary` | User | Global ROI totals |
+| GET | `/api/roi/trend` | User | Daily ROI trend |
+| GET | `/api/roi/orgs` | User | Per-org ROI |
+| GET | `/api/roi/templates` | User | Template rankings |
+| GET | `/api/roi/categories` | User | Category breakdown |
+| GET | `/api/roi/config` | User | List ROI configs |
+| POST | `/api/roi/config` | Developer+ | Create ROI config |
+| PUT | `/api/roi/config/{id}` | Developer+ | Update ROI config |
+| DELETE | `/api/roi/config/{id}` | Admin | Deactivate config |
+| GET | `/api/export/*` | User (scoped) | CSV downloads |
+| GET | `/api/auth/login` | None | Start OAuth2 flow |
+| GET | `/api/auth/callback` | None | OAuth2 callback |
+| GET | `/api/auth/logout` | User | Revoke session |
+| GET | `/api/auth/me` | User | Current user profile |
+
+**Period values:** `day`, `week`, `month`, `quarter`, `year`
+
+---
+
+## Database Schema
+
+### Core tables (`schema.sql`)
+
+| Table | Purpose |
+|---|---|
+| `organizations` | AWX orgs — id matches AWX org id |
+| `awx_objects` | Polymorphic: job_template, workflow_job_template, project, inventory, credential, host |
+| `job_executions` | One row per job run — has generated column `failed` |
+| `daily_metrics` | Pre-aggregated per day × org × template. Rows with `job_template_id IS NULL` = org-level rollup sentinels |
+| `rbac_teams` | AWX teams |
+| `rbac_users` | AWX users |
+| `rbac_user_org_roles` | User × org × role junction |
+| `rbac_team_members` | Team × user membership |
+| `sync_state` | Last sync timestamp and status per entity |
+
+### Auth & ROI tables (`schema_v2.sql`)
+
+| Table | Purpose |
+|---|---|
+| `portal_sessions` | Active user sessions — UUID PK, AWX token, expiry, portal role |
+| `portal_user_org_permissions` | Per-org access level derived from AWX roles at login |
+| `oauth_states` | Short-lived CSRF state tokens for the OAuth flow |
+| `template_roi_config` | Manual metadata per template: minutes per run, hourly rate, category |
+| `daily_roi_metrics` | Pre-computed ROI per template per day — refreshed post-sync |
+
+### Key views
+
+```sql
+SELECT * FROM v_org_summary;            -- 30-day per-org rollup
+SELECT * FROM v_global_daily_trend;     -- Daily global trend
+SELECT * FROM v_roi_org_summary;        -- Lifetime ROI per org
+SELECT * FROM v_roi_top_templates;      -- Templates ranked by net value
 ```
-Internet ──► firewalld ──► Nginx (80/443)
-                               │
-                    ┌──────────┴──────────┐
-                    │                     │
-              /api/* proxied         / static
-                    │                     │
-             Gunicorn :8000          frontend/
-             (localhost only)        index.html
-                    │
-             PostgreSQL :5432
-             (localhost only)
+
+### Maintenance functions
+
+```sql
+-- Recompute daily_metrics from raw job_executions
+SELECT refresh_daily_metrics();
+
+-- Recompute ROI metrics
+SELECT refresh_daily_roi_metrics();
+
+-- Clean expired sessions
+SELECT cleanup_expired_sessions();
 ```
-
-- **Port 8000** (Gunicorn) is bound to `127.0.0.1` — never exposed to the network
-- **Port 5432** (PostgreSQL) is local-only — no remote connections permitted
-- **firewalld** allows only ports 80 and 443 publicly
-
-### SELinux
-
-The installer sets `httpd_can_network_connect=1` (persistently) to allow Nginx to proxy to Gunicorn. All other SELinux policies remain at RHEL defaults (Enforcing).
-
-```bash
-# Verify
-getsebool httpd_can_network_connect
-```
-
-### Credentials
-
-| Secret | Location | Mode |
-|---|---|---|
-| AWX Bearer Token | `/opt/awx-portal/config/config.yaml` | `640` (root:awxportal) |
-| PostgreSQL Password | Auto-generated, saved to `/root/.awx-portal-db-pass` | `600` (root only) |
-| AWX Portal system user | `/sbin/nologin` shell | No login, no sudo |
-
-### Nginx Security Headers
-
-```
-X-Frame-Options:        SAMEORIGIN
-X-XSS-Protection:       1; mode=block
-X-Content-Type-Options: nosniff
-Referrer-Policy:        strict-origin
-Content-Security-Policy: default-src 'self' + CDN allowlist only
-```
-
-### AWX Token Recommendations
-
-- Use a **dedicated read-only service account** in AWX — not a personal user token
-- Assign the account **Auditor** role at the org level (read-only by definition)
-- Rotate the token periodically and update `config.yaml` + restart the API
 
 ---
 
 ## Operational Runbook
 
-### Service Commands
+### Service commands
 
 ```bash
 # Status
 systemctl status awx-portal-api
-systemctl status awx-collector.timer
+systemctl list-timers awx-collector.timer
+
+# Logs
+journalctl -u awx-portal-api -f
+journalctl -u awx-collector -f
 
 # Restart API (after config changes)
 systemctl restart awx-portal-api
 
-# View live logs
-journalctl -u awx-portal-api -f
-journalctl -u awx-collector -f
-
-# Next scheduled sync time
-systemctl list-timers awx-collector.timer
-
-# Manual sync run
+# Manual sync
 sudo -u awxportal \
   AWX_PORTAL_CONFIG=/opt/awx-portal/config/config.yaml \
   /opt/awx-portal/venv-collector/bin/python \
   /opt/awx-portal/collector/collector.py
 
 # Full 90-day backfill
-sudo -u awxportal \
-  AWX_PORTAL_CONFIG=/opt/awx-portal/config/config.yaml \
-  /opt/awx-portal/venv-collector/bin/python \
-  /opt/awx-portal/collector/collector.py --full-sync
+sudo -u awxportal ... collector.py --full-sync
 
-# Sync a single entity
-sudo -u awxportal \
-  AWX_PORTAL_CONFIG=/opt/awx-portal/config/config.yaml \
-  /opt/awx-portal/venv-collector/bin/python \
-  /opt/awx-portal/collector/collector.py --entity jobs
+# Sync single entity (debugging)
+sudo -u awxportal ... collector.py --entity jobs
 ```
 
-### Log Files
-
-| File | Content |
-|---|---|
-| `/var/log/awx-portal/collector.log` | Sync runs, entity counts, errors |
-| `/var/log/awx-portal/api.log` | Gunicorn startup / shutdown |
-| `/var/log/awx-portal/api-access.log` | HTTP access log for all API requests |
-| `/var/log/awx-portal/api-error.log` | Gunicorn worker errors |
-| `/var/log/nginx/awx-portal-access.log` | Nginx access (all requests) |
-| `/var/log/nginx/awx-portal-error.log` | Nginx errors |
-
-Logs rotate daily, retained 30 days (configured in `/etc/logrotate.d/awx-portal`).
-
-### Updating the Portal
+### Database access
 
 ```bash
-# Pull latest code
-git pull
-
-# Re-run installer (idempotent — skips steps already done)
-sudo bash install.sh
-
-# Or manually update specific components:
-# Update Python dependencies
-sudo -u awxportal /opt/awx-portal/venv-api/bin/pip install -r api/requirements.txt
-
-# Update frontend only (just copy the file)
-sudo cp frontend/index.html /opt/awx-portal/frontend/index.html
-
-# Apply schema changes (additive only — never drops data)
 PGPASSWORD=$(cat /root/.awx-portal-db-pass) \
-  psql -h 127.0.0.1 -U awxportal -d awxportal -f schema.sql
+  psql -h 127.0.0.1 -U awxportal -d awxportal
 ```
+
+### Log files
+
+| File | Contents |
+|---|---|
+| `/var/log/awx-portal/collector.log` | Sync runs, entity counts, API errors |
+| `/var/log/awx-portal/api.log` | Gunicorn startup / shutdown |
+| `/var/log/awx-portal/api-access.log` | HTTP access log |
+| `/var/log/awx-portal/api-error.log` | FastAPI exceptions |
+| `/var/log/nginx/awx-portal-access.log` | All inbound requests |
+| `/var/log/nginx/awx-portal-error.log` | Nginx errors |
 
 ### Adding HTTPS / TLS
 
 ```bash
-# Install certbot (RHEL 8/9)
 dnf install -y certbot python3-certbot-nginx
-
-# Obtain certificate
 certbot --nginx -d awx-portal.your-company.com
-
-# Or use your own certificate:
-# Edit /etc/nginx/conf.d/awx-portal.conf
-# Uncomment the HTTPS server block at the bottom
-# Set ssl_certificate and ssl_certificate_key paths
-nginx -t && systemctl reload nginx
 ```
+
+Or with your own certificate — edit `/etc/nginx/conf.d/awx-portal.conf` and uncomment the HTTPS server block.
 
 ---
 
 ## Troubleshooting
 
-### Dashboard shows no data
-
+**Dashboard shows no data**
 ```bash
-# 1. Check sync state via API
 curl http://localhost/api/sync | python3 -m json.tool
-
-# 2. Check collector log for errors
 tail -50 /var/log/awx-portal/collector.log
-
-# 3. Run a manual sync and watch output
-sudo -u awxportal \
-  AWX_PORTAL_CONFIG=/opt/awx-portal/config/config.yaml \
-  /opt/awx-portal/venv-collector/bin/python \
-  /opt/awx-portal/collector/collector.py --entity jobs 2>&1
 ```
 
-### API returns 502 Bad Gateway
-
+**API returns 502 Bad Gateway**
 ```bash
-# Gunicorn not running
 systemctl status awx-portal-api
-journalctl -u awx-portal-api -n 50
-
-# Check it's listening
 ss -tlnp | grep 8000
-
-# Restart
 systemctl restart awx-portal-api
 ```
 
-### Collector: SSL certificate error on AWX
+**Collector: 401 from AWX**
+```bash
+curl -H "Authorization: Bearer YOUR_TOKEN" https://awx.example.com/api/v2/ping/
+```
+Regenerate the token in AWX and update `config.yaml`.
 
+**Collector: SSL certificate error**
 ```yaml
-# config.yaml — dev/self-signed environments only
+# config.yaml — dev only
 awx:
   verify_ssl: false
 ```
 
-### Collector: 401 Unauthorized from AWX
-
-```bash
-# Test the token manually
-curl -H "Authorization: Bearer YOUR_TOKEN" \
-     https://awx.example.com/api/v2/ping/
+**daily_metrics empty after sync**
+```sql
+SELECT refresh_daily_metrics();
 ```
 
-If this fails, regenerate the token in AWX and update `config.yaml`.
-
-### daily_metrics empty after sync
-
+**SELinux blocking Nginx → Gunicorn**
 ```bash
-# Run the aggregation function manually
-PGPASSWORD=$(cat /root/.awx-portal-db-pass) \
-  psql -h 127.0.0.1 -U awxportal -d awxportal \
-  -c "SELECT refresh_daily_metrics();"
-```
-
-### SELinux blocking Nginx → Gunicorn proxy
-
-```bash
-# Check for AVC denials
-ausearch -m avc -ts recent | grep nginx
-
-# Fix
 setsebool -P httpd_can_network_connect 1
 ```
 
-### Charts load but show 0 jobs
-
-The `daily_metrics` table may have data but with a `job_template_id IS NULL` filter mismatch. Check:
-
-```sql
-SELECT metric_date, org_id, job_template_id, total_jobs
-FROM daily_metrics
-ORDER BY metric_date DESC
-LIMIT 20;
-```
-
-If rows exist but `job_template_id` is never NULL, run `refresh_daily_metrics()` — the org-level sentinel rows may be missing.
-
 ---
 
-## Contributing
-
-Contributions are welcome. Please follow these guidelines:
-
-1. **Fork** the repository and create a feature branch: `git checkout -b feature/your-feature`
-2. **Test** on a RHEL 8 or RHEL 9 VM before submitting
-3. **Schema changes** must be additive — no `DROP` or `ALTER COLUMN` that loses data
-4. **API changes** must remain backward-compatible (new query params must be optional)
-5. **Frontend changes** must work without a build step — no npm dependencies
-6. Submit a **Pull Request** with a clear description of what changed and why
-
-### Development Setup (without a RHEL server)
+## Development Setup (without RHEL)
 
 ```bash
-# macOS / Ubuntu dev setup
+# Create virtualenvs
 python3 -m venv venv && source venv/bin/activate
 pip install -r api/requirements.txt
 
-# Start PostgreSQL locally (Docker)
+# Start PostgreSQL (Docker)
 docker run -d --name awx-pg \
   -e POSTGRES_USER=awxportal \
-  -e POSTGRES_PASSWORD=devpassword \
+  -e POSTGRES_PASSWORD=devpass \
   -e POSTGRES_DB=awxportal \
   -p 5432:5432 postgres:15
 
 # Apply schema
-PGPASSWORD=devpassword psql -h localhost -U awxportal -d awxportal -f schema.sql
+PGPASSWORD=devpass psql -h localhost -U awxportal -d awxportal -f schema.sql
+PGPASSWORD=devpass psql -h localhost -U awxportal -d awxportal -f schema_v2.sql
 
-# Edit config
+# Copy and edit config
 cp config/config.yaml config/config.local.yaml
-# set database.password=devpassword, portal.demo_mode=true
+# set database.password = devpass
+# set portal.demo_mode = true (no AWX connection needed for UI work)
 
 # Start API
 AWX_PORTAL_CONFIG=config/config.local.yaml \
   uvicorn api.main:app --reload --port 8000
 
 # Open dashboard (demo mode — no AWX needed)
-open frontend/index.html
-# or: python3 -m http.server 8080 --directory frontend/
+python3 -m http.server 8080 --directory frontend/
+# open http://localhost:8080
 ```
+
+---
+
+## Security Notes
+
+- Gunicorn (port 8000) is bound to `127.0.0.1` — never exposed to the network
+- PostgreSQL (port 5432) is local-only
+- AWX API token is stored in `config.yaml` (mode `640`, owner `root:awxportal`)
+- PostgreSQL password is auto-generated and stored in `/root/.awx-portal-db-pass` (mode `600`)
+- The `awxportal` system user has `/sbin/nologin` shell — no interactive access
+- Nginx sets `X-Frame-Options`, `X-Content-Type-Options`, `X-XSS-Protection`, `Referrer-Policy`, and `Content-Security-Policy` on all responses
+- Use a **dedicated read-only service account** in AWX for the API token (not a personal account)
+- Set `auth.cookie_secure: true` whenever serving over HTTPS (production)
+
+---
+
+## Contributing
+
+1. Fork and create a feature branch: `git checkout -b feature/your-feature`
+2. Test on RHEL 8 or 9 before submitting
+3. Schema changes must be additive only — no `DROP`, no `ALTER COLUMN` that loses data
+4. API changes must be backward-compatible — new query params must be optional
+5. Frontend changes must work without a build step — no npm dependencies
+6. Submit a Pull Request with a clear description
 
 ---
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE) for details.
 
 ---
 
 ## Acknowledgements
 
-- [AWX Project](https://github.com/ansible/awx) — the open-source Ansible Tower
+- [AWX Project](https://github.com/ansible/awx) — open-source Ansible automation platform
 - [FastAPI](https://fastapi.tiangolo.com/) — modern Python web framework
-- [Recharts](https://recharts.org/) — composable chart library for React
+- [Recharts](https://recharts.org/) — composable charting for React
 - [PostgreSQL](https://www.postgresql.org/) — the world's most advanced open source RDBMS
-
----
-
-*Built for enterprise Ansible automation teams who need visibility without complexity.*

@@ -49,3 +49,35 @@ portal:
   org_name: "My Enterprise"
   # Max rows for paginated job list API
   jobs_page_size_max: 500
+
+# ── Authentication (AWX OAuth2) ──────────────────────────
+# Requires an OAuth2 Application registered in AWX:
+#   AWX → Administration → Applications → Add
+#   Grant type: Authorization code
+#   Client type: Confidential
+#   Redirect URI: https://<your-portal-fqdn>/api/auth/callback
+auth:
+  enabled: false                             # Set true to enforce login
+  client_id: "REPLACE_ME_AWX_CLIENT_ID"
+  client_secret: "REPLACE_ME_AWX_CLIENT_SECRET"
+  redirect_uri: "https://awx-portal.example.com/api/auth/callback"
+  cookie_secure: true                        # Set false if serving HTTP only (dev)
+  session_ttl_hours: 8
+
+# ── ROI / Impact Metrics ─────────────────────────────────
+roi:
+  # Default engineer hourly rate used when not set per-template
+  default_hourly_rate: 75.00
+  # Default failure remediation cost (minutes of engineer time)
+  default_failure_cost_minutes: 30
+  # Categories available in the ROI config UI
+  categories:
+    - patching
+    - deployment
+    - compliance
+    - backup
+    - monitoring
+    - security
+    - provisioning
+    - decommission
+    - general

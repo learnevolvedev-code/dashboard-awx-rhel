@@ -14,14 +14,37 @@ from typing import Optional
 from fastapi import APIRouter, Query, HTTPException, Path
 from .. import database
 
+from fastapi import Depends
+from ..auth import get_current_user, get_user_org_permission
+
 router = APIRouter(tags=["orgs"])
 
 PERIOD_DAYS = {"day":1,"week":7,"month":30,"quarter":91,"year":365}
 
+def _permitted_org_ids(user: dict) -> Optional[list]:
+    """Returns None (all orgs) for admins, or list of permitted org ids for scoped users."""
+    if user.get("is_superuser") or user.get("portal_role") == "admin":
+        return None  # no restriction
+    from .. import database as db
+    rows = db.fetch_all(
+        "SELECT org_id FROM portal_user_org_permissions WHERE awx_user_id=%s",
+        (user["awx_user_id"],)
+    )
+    return [r["org_id"] for r in rows]
+
 # ── /api/orgs ─────────────────────────────────────────────
 @router.get("/orgs")
-def list_orgs():
-    return database.fetch_all("SELECT * FROM v_org_summary ORDER BY org_name")
+def list_orgs(user: dict = Depends(get_current_user)):
+    permitted = _permitted_org_ids(user)
+    if permitted is None:
+        return database.fetch_all("SELECT * FROM v_org_summary ORDER BY org_name")
+    if not permitted:
+        return []
+    placeholders = ",".join(["%s"] * len(permitted))
+    return database.fetch_all(
+        f"SELECT * FROM v_org_summary WHERE org_id IN ({placeholders}) ORDER BY org_name",
+        tuple(permitted),
+    )
 
 # ── /api/orgs/{id} ────────────────────────────────────────
 @router.get("/orgs/{org_id}")
