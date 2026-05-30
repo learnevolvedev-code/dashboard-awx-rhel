@@ -4,11 +4,77 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>AWX Analytics Portal</title>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"/>
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<!--
+  Dependency loading strategy:
+  1. Check if vendor/ folder exists (run scripts/download-vendor.sh to populate it).
+  2. If vendor/ assets are present → load from local files (fully offline).
+  3. If not → fall back to CDN (requires internet).
+
+  To populate vendor/:
+    bash scripts/download-vendor.sh
+  Then copy to install location:
+    cp -r frontend/vendor /opt/awx-portal/frontend/
+-->
+<script>
+(function(){
+  // Detect vendor/ by attempting to load a sentinel file
+  var base = (function(){
+    var s = document.currentScript || document.scripts[document.scripts.length-1];
+    return s.src ? s.src.replace(/[^/]*$/, '') : './';
+  })();
+  window._VENDOR_BASE = base + 'vendor/';
+  window._USE_VENDOR  = false; // set to true by vendor-loader below if files found
+})();
+</script>
+
+<!-- Vendor-first loader: tries local vendor/, falls back to CDN -->
+<script>
+document.addEventListener('DOMContentLoaded', function(){}, false);
+(function(){
+  function loadCSS(href){
+    var l=document.createElement('link');
+    l.rel='stylesheet';l.href=href;
+    document.head.appendChild(l);
+  }
+  // Font: try vendor first, fall back to Google Fonts
+  var fontVendor = window._VENDOR_BASE + 'fonts/ibm-plex.css';
+  var fontCDN    = 'https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap';
+  // We always load CDN as fallback; vendor overrides via @font-face priority
+  loadCSS(fontCDN);
+  loadCSS(fontVendor); // gracefully ignored if 404
+})();
+</script>
+
+<!-- Load scripts synchronously so React/Recharts are ready before JSX -->
+<script>
+(function(){
+  var v = window._VENDOR_BASE;
+  var scripts = [
+    { vendor: v+'react.production.min.js',      cdn: 'https://unpkg.com/react@18/umd/react.production.min.js',         crossorigin: true  },
+    { vendor: v+'react-dom.production.min.js',  cdn: 'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js', crossorigin: true  },
+    { vendor: v+'Recharts.js',                  cdn: 'https://unpkg.com/recharts@2.12.7/umd/Recharts.js',              crossorigin: false },
+    { vendor: v+'babel.min.js',                 cdn: 'https://unpkg.com/@babel/standalone/babel.min.js',               crossorigin: false },
+  ];
+  // Write script tags: prefer vendor paths; the browser will 404-silently
+  // if vendor/ doesn't exist and we need CDN. Use a synchronous XHR probe
+  // to detect vendor availability before writing tags.
+  var vendorOK = false;
+  try {
+    var x = new XMLHttpRequest();
+    x.open('HEAD', v+'react.production.min.js', false); // sync
+    x.send();
+    vendorOK = (x.status === 200);
+  } catch(e) {}
+  window._USE_VENDOR = vendorOK;
+  scripts.forEach(function(s){
+    var src = vendorOK ? s.vendor : s.cdn;
+    var el  = document.createElement('script');
+    el.src  = src;
+    if(s.crossorigin) el.crossOrigin = 'anonymous';
+    document.write(el.outerHTML); // synchronous, preserves load order
+  });
+})();
+</script>
 <style>
 :root{--bg:#090c12;--surface:#0f1420;--surface2:#161c2d;--border:#232d45;--border2:#2d3a5a;--accent:#3b82f6;--accent2:#6366f1;--accent3:#06b6d4;--success:#10b981;--danger:#f43f5e;--warning:#f59e0b;--purple:#8b5cf6;--text:#e2e8f0;--muted:#64748b;--muted2:#475569;--r:10px;--rs:6px;--font:'IBM Plex Sans',sans-serif;--mono:'IBM Plex Mono',monospace}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -74,7 +140,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .prog-bar{width:100%;height:5px;background:var(--surface2);border-radius:3px;overflow:hidden}
 .prog-fill{height:100%;border-radius:3px}
 .roi-hero{background:linear-gradient(135deg,rgba(59,130,246,.07),rgba(99,102,241,.07));border:1px solid rgba(59,130,246,.18);border-radius:var(--r);padding:22px;display:flex;align-items:center;gap:22px;margin-bottom:18px;flex-wrap:wrap}
-.roi-hero-number{font-size:40px;font-weight:600;letter-spacing:-2px;background:linear-gradient(135deg,var(--accent),var(--accent2));background-clip:text;-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.roi-hero-number{font-size:40px;font-weight:600;letter-spacing:-2px;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
 .roi-hero-label{font-size:12px;color:var(--muted);margin-top:2px}
 .host-bar{display:flex;height:8px;border-radius:4px;overflow:hidden;gap:1px}
 .auth-wall{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:65vh;gap:14px;text-align:center}

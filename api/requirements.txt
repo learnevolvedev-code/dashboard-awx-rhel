@@ -1,4 +1,25 @@
-requests>=2.31.0
-psycopg2-binary>=2.9.9
-PyYAML>=6.0.1
-python-dateutil>=2.8.2
+# AWX Analytics Portal – Collector dependencies
+# Fully pinned for reproducible installs.
+# Generated for Python 3.9+ on RHEL 8/9.
+#
+# Install:
+#   python3 -m venv /opt/awx-portal/venv-collector
+#   /opt/awx-portal/venv-collector/bin/pip install \
+#       --no-index --find-links /opt/awx-portal/wheels/collector \
+#       -r collector/requirements.txt
+#
+# Or with internet access:
+#   pip install -r collector/requirements.txt
+
+requests==2.31.0
+urllib3==2.1.0
+certifi==2024.2.2
+charset-normalizer==3.3.2
+idna==3.6
+
+psycopg2-binary==2.9.9
+
+PyYAML==6.0.1
+
+python-dateutil==2.9.0
+six==1.16.0

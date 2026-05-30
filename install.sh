@@ -150,19 +150,47 @@ ok "Files installed"
 # ── Step 5: Python virtual environments ───────────────────
 step "Step 5: Setting up Python virtual environments"
 
-# Collector venv
-python3 -m venv "${INSTALL_DIR}/venv-collector"
-"${INSTALL_DIR}/venv-collector/bin/pip" install --quiet --upgrade pip
-"${INSTALL_DIR}/venv-collector/bin/pip" install --quiet \
-    -r "${INSTALL_DIR}/collector/requirements.txt"
-ok "Collector venv ready"
+# Use setup-venvs.sh if present, otherwise fall back to inline install
+if [[ -f "${INSTALL_DIR}/scripts/setup-venvs.sh" ]]; then
+    info "Using scripts/setup-venvs.sh for venv setup…"
+    bash "${INSTALL_DIR}/scripts/setup-venvs.sh"
+else
+    warn "scripts/setup-venvs.sh not found – using inline pip install"
 
-# API venv
-python3 -m venv "${INSTALL_DIR}/venv-api"
-"${INSTALL_DIR}/venv-api/bin/pip" install --quiet --upgrade pip
-"${INSTALL_DIR}/venv-api/bin/pip" install --quiet \
-    -r "${INSTALL_DIR}/api/requirements.txt"
-ok "API venv ready"
+    # Collector venv
+    python3 -m venv "${INSTALL_DIR}/venv-collector"
+    "${INSTALL_DIR}/venv-collector/bin/pip" install --quiet --upgrade pip
+    "${INSTALL_DIR}/venv-collector/bin/pip" install --quiet \
+        --prefer-binary \
+        -r "${INSTALL_DIR}/collector/requirements.txt"
+    ok "Collector venv ready"
+
+    # API venv
+    python3 -m venv "${INSTALL_DIR}/venv-api"
+    "${INSTALL_DIR}/venv-api/bin/pip" install --quiet --upgrade pip
+    "${INSTALL_DIR}/venv-api/bin/pip" install --quiet \
+        --prefer-binary \
+        -r "${INSTALL_DIR}/api/requirements.txt"
+    ok "API venv ready"
+fi
+
+# ── Step 5b: Frontend vendor assets ───────────────────────
+step "Step 5b: Downloading frontend vendor assets"
+
+VENDOR_DIR="${INSTALL_DIR}/frontend/vendor"
+if [[ -f "${VENDOR_DIR}/react.production.min.js" ]]; then
+    ok "Vendor assets already present – skipping download"
+elif [[ -f "${INSTALL_DIR}/scripts/download-vendor.sh" ]]; then
+    info "Running scripts/download-vendor.sh…"
+    # Run from install dir so relative paths resolve correctly
+    (cd "${INSTALL_DIR}" && bash scripts/download-vendor.sh) && \
+        ok "Vendor assets downloaded" || \
+        warn "Vendor download failed – portal will use CDN fallback"
+else
+    warn "scripts/download-vendor.sh not found"
+    warn "Portal will use CDN (unpkg.com) for React/Recharts – requires internet at runtime"
+    warn "To fix later: bash ${INSTALL_DIR}/scripts/download-vendor.sh"
+fi
 
 # ── Step 6: File ownership & permissions ──────────────────
 step "Step 6: Setting ownership and permissions"
@@ -297,3 +325,4 @@ echo -e "    systemctl status  awx-collector.timer"
 echo -e "    journalctl -u awx-portal-api -f"
 echo -e "    journalctl -u awx-collector  -f"
 echo ""
+echo -e "${GRN}Thank you for installing the AWX Analytics Portal!${NC}"

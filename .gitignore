@@ -25,3 +25,17 @@ Thumbs.db
 
 # Node (design guide build only)
 node_modules/
+
+# Vendor assets (download with: bash scripts/download-vendor.sh)
+# Keep README.md but ignore actual binary files
+frontend/vendor/*.js
+frontend/vendor/fonts/ibm-plex-sans/
+frontend/vendor/fonts/ibm-plex-mono/
+frontend/vendor/fonts/ibm-plex.css
+
+# Python wheel cache (download with: bash scripts/setup-venvs.sh --download-wheels)
+wheels/
+
+# Virtual environments (create with: bash scripts/setup-venvs.sh)
+venv-collector/
+venv-api/
