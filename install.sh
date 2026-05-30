@@ -115,8 +115,13 @@ fi
 # Apply schema
 log "Applying schema…"
 PGPASSWORD="$DB_PASS" psql -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" \
-    -f "${SCRIPT_DIR}/schema.sql" || err "Schema application failed"
-ok "Schema applied"
+    -f "${SCRIPT_DIR}/schema.sql" || err "Base schema application failed"
+ok "Base schema applied"
+
+log "Applying schema_v2 (auth + dynamic ROI)…"
+PGPASSWORD="$DB_PASS" psql -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" \
+    -f "${SCRIPT_DIR}/schema_v2.sql" || err "Schema v2 application failed"
+ok "Schema v2 applied"
 
 # ── Step 4: Install portal files ─────────────────────────
 step "Step 4: Installing portal files to ${INSTALL_DIR}"
@@ -129,7 +134,8 @@ cp -r "${SCRIPT_DIR}/collector/"*  "${INSTALL_DIR}/collector/"
 cp -r "${SCRIPT_DIR}/api/"*        "${INSTALL_DIR}/api/"
 cp    "${SCRIPT_DIR}/frontend/index.html" "${INSTALL_DIR}/frontend/"
 cp    "${SCRIPT_DIR}/nginx/awx-portal.conf" /etc/nginx/conf.d/
-cp    "${SCRIPT_DIR}/schema.sql"   "${INSTALL_DIR}/"
+cp    "${SCRIPT_DIR}/schema.sql"    "${INSTALL_DIR}/"
+cp    "${SCRIPT_DIR}/schema_v2.sql" "${INSTALL_DIR}/"
 
 # Install config (only if not already present – preserve customisations)
 if [[ ! -f "${INSTALL_DIR}/config/config.yaml" ]]; then
